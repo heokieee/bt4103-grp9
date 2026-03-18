@@ -282,9 +282,6 @@ def main():
         payload = build_form(schema)
         submitted = st.form_submit_button("Submit New Customer")
 
-    st.markdown("### Submission Preview")
-    st.json(payload)
-
     if not submitted:
         return
 
