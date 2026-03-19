@@ -112,21 +112,24 @@ def get_firestore_client():
 
     if not firebase_admin._apps:
         service_account = st.secrets.get("gcp_service_account", None)
+
         if service_account is None:
             raise RuntimeError(
-                "Missing gcp_service_account in Streamlit secrets. "
-                "Add your service account JSON under [gcp_service_account]."
+                "Missing gcp_service_account in Streamlit secrets."
             )
 
-        if isinstance(service_account, dict):
-            cred = credentials.Certificate(service_account)
-        else:
-            cred = credentials.Certificate(str(service_account))
+        # Convert to dict (important)
+        service_account = dict(service_account)
+
+        # Fix newline issue (important)
+        if "private_key" in service_account:
+            service_account["private_key"] = service_account["private_key"].replace("\\n", "\n")
+            
+        cred = credentials.Certificate(service_account)
 
         firebase_admin.initialize_app(cred)
 
     return firestore.client()
-
 
 def validate_submission(payload: dict[str, Any], schema: dict[str, Any]) -> list[str]:
     errors: list[str] = []
