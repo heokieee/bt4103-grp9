@@ -1,10 +1,21 @@
 """
-E-Commerce Churn Prediction Dashboard — Enhanced UI
-LightGBM deployment version
+E-Commerce Churn Prediction Dashboard — Ensemble Deployment Version
+
+Data sources:
+1. Firestore live data from current_customers
+2. Uploaded CSV
+
+Model logic:
+- Uses preprocessing pipeline exported from ensemble.ipynb
+- Scores with Random Forest, XGBoost, and LightGBM
+- Combines probabilities using weighted ensemble
 """
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Optional
 
 import joblib
 import numpy as np
@@ -22,86 +33,92 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-# -- page config --
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+
+
+# =========================
+# PAGE CONFIG
+# =========================
 st.set_page_config(
     page_title="E-Commerce Churn Dashboard",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# -- custom CSS --
-st.markdown("""
-<style>
-div[data-testid="stMetric"] {
-    background: linear-gradient(135deg, #667eea11, #764ba211);
-    border: 1px solid #e0e0e0;
-    border-radius: 12px;
-    padding: 16px 20px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-}
-div[data-testid="stMetric"] label {
-    font-size: 0.82rem !important;
-    color: #555 !important;
-    font-weight: 600 !important;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-    font-size: 1.6rem !important;
-    font-weight: 700 !important;
-}
-button[data-baseweb="tab"] {
-    font-size: 0.95rem !important;
-    font-weight: 600 !important;
-    padding: 10px 24px !important;
-}
-.stDataFrame {
-    border-radius: 8px;
-    overflow: hidden;
-}
-section[data-testid="stSidebar"] > div {
-    padding-top: 1.5rem;
-}
-hr {
-    border-color: #e8e8e8 !important;
-}
-</style>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    div[data-testid="stMetric"] {
+        background: linear-gradient(135deg, #667eea11, #764ba211);
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    div[data-testid="stMetric"] label {
+        font-size: 0.82rem !important;
+        color: #555 !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        font-size: 1.6rem !important;
+        font-weight: 700 !important;
+    }
+    button[data-baseweb="tab"] {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        padding: 10px 24px !important;
+    }
+    .stDataFrame {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    section[data-testid="stSidebar"] > div {
+        padding-top: 1.5rem;
+    }
+    hr {
+        border-color: #e8e8e8 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-# -- file path constants --
+# =========================
+# PATHS / CONSTANTS
+# =========================
 BASE = Path(__file__).resolve().parent
-MODEL_PATH = BASE / "lgbm_model.joblib"
-NUM_IMPUTER_PATH = BASE / "lgbm_num_imputer.joblib"
-CAT_IMPUTER_PATH = BASE / "lgbm_cat_imputer.joblib"
-ENCODER_PATH = BASE / "lgbm_encoder.joblib"
-SCALER_PATH = BASE / "lgbm_scaler.joblib"
-META_PATH = BASE / "lgbm_metadata.json"
+
+PIPELINE_PATH = BASE / "ensemble_preprocessing_pipeline.joblib"
+RF_MODEL_PATH = BASE / "ensemble_rf_model.joblib"
+XGB_MODEL_PATH = BASE / "ensemble_xgb_model.joblib"
+LGBM_MODEL_PATH = BASE / "ensemble_lgbm_model.joblib"
+META_PATH = BASE / "ensemble_metadata.json"
+
 METRICS_ALL_MODELS_PATH = BASE / "metrics_all_models.csv"
 CONFUSION_ALL_MODELS_PATH = BASE / "confusion_all_models.csv"
 FEATURE_IMPORTANCE_PATH = BASE / "feature_importance.csv"
 
-DEFAULT_ID_CANDIDATES = ["CustomerID", "customerID", "customer_id", "id", "ID"]
+CURRENT_COLLECTION = "current_customers"
 
-RAW_FEATURE_COLUMNS = [
-    "Tenure",
-    "CityTier",
-    "WarehouseToHome",
-    "HourSpendOnApp",
-    "NumberOfDeviceRegistered",
-    "SatisfactionScore",
-    "NumberOfAddress",
-    "Complain",
-    "OrderAmountHikeFromlastYear",
-    "CouponUsed",
-    "OrderCount",
-    "DaySinceLastOrder",
-    "CashbackAmount",
-    "PreferredLoginDevice",
-    "PreferredPaymentMode",
-    "Gender",
-    "PreferedOrderCat",
-    "MaritalStatus",
+DEFAULT_ID_CANDIDATES = [
+    "CustomerID",
+    "customerID",
+    "customer_id",
+    "id",
+    "ID",
+    "firestore_doc_id",
 ]
+
+PLOTLY_TEMPLATE = "plotly_white"
 
 RISK_COLOURS = {
     "Low": "#2ecc71",
@@ -109,34 +126,41 @@ RISK_COLOURS = {
     "High": "#e74c3c",
     "Critical": "#8e44ad",
 }
-PLOTLY_TEMPLATE = "plotly_white"
 
 
-# ===== HELPER FUNCTIONS =====
-
-def safe_read_csv(path):
+# =========================
+# HELPERS
+# =========================
+def safe_read_csv(path: Path) -> Optional[pd.DataFrame]:
     return pd.read_csv(path) if path.exists() else None
 
 
-def to_binary_series(s):
-    s = s.copy()
+def to_binary_series(series: pd.Series) -> pd.Series:
+    s = series.copy()
     if s.dtype == object:
-        mapping = {"Yes": 1, "No": 0, "yes": 1, "no": 0, "1": 1, "0": 0}
-        s = s.map(mapping).fillna(0).astype(int)
-    return s.astype(int)
+        mapping = {
+            "Yes": 1, "No": 0,
+            "yes": 1, "no": 0,
+            "1": 1, "0": 0,
+            1: 1, 0: 0,
+            True: 1, False: 0,
+        }
+        s = s.map(mapping).fillna(s)
+    return pd.to_numeric(s, errors="coerce").fillna(0).astype(int)
 
 
-def pick_customer_id_column(df):
-    for c in DEFAULT_ID_CANDIDATES:
-        if c in df.columns:
-            return c
-    for c in df.columns:
-        if "customer" in c.lower() and "id" in c.lower():
-            return c
+def pick_customer_id_column(df: pd.DataFrame) -> Optional[str]:
+    for col in DEFAULT_ID_CANDIDATES:
+        if col in df.columns:
+            return col
+    for col in df.columns:
+        col_l = col.lower()
+        if "customer" in col_l and "id" in col_l:
+            return col
     return None
 
 
-def risk_tier_from_proba(proba):
+def risk_tier_from_proba(proba: np.ndarray) -> pd.Series:
     return pd.cut(
         proba,
         bins=[0, 0.25, 0.50, 0.75, 1.01],
@@ -145,205 +169,155 @@ def risk_tier_from_proba(proba):
     )
 
 
-def safe_div(a, b, fill=0):
-    a = np.asarray(a, dtype=float)
-    b = np.asarray(b, dtype=float)
-    return np.where(np.abs(b) > 1e-12, a / b, fill)
-
-
-def simple_action_recommendations(row):
+def simple_action_recommendations(row: pd.Series) -> list[str]:
     actions = []
+
     if row.get("Complain", 0) == 1:
-        actions.append("Follow up on recent complaint — prioritise complaint resolution within 48 hours.")
+        actions.append("Follow up on recent complaint and resolve within 48 hours.")
     if row.get("SatisfactionScore", 5) <= 2:
-        actions.append("Launch satisfaction-recovery outreach — personal call or targeted survey.")
+        actions.append("Launch satisfaction recovery outreach with a personal touchpoint.")
     if row.get("CashbackAmount", 999) < 130:
-        actions.append("Offer a cashback boost — customers with low cashback tend to churn more.")
+        actions.append("Offer a cashback or retention incentive to improve stickiness.")
     if row.get("CouponUsed", 999) < 1:
-        actions.append("Send a coupon incentive — encourage first-time or repeat coupon usage.")
+        actions.append("Send a coupon campaign to encourage the next purchase.")
     if row.get("DaySinceLastOrder", 0) > 10:
-        actions.append("Trigger a win-back campaign — the customer has not ordered recently.")
+        actions.append("Trigger a win-back campaign because the customer has been inactive.")
+    if row.get("Tenure", 99) <= 2:
+        actions.append("Prioritise onboarding and early lifecycle engagement.")
+
     if not actions:
-        actions.append("No immediate risk signals detected — continue standard engagement.")
+        actions.append("No major immediate churn signals detected. Continue standard engagement.")
+
     return actions
 
 
-# -- feature engineering --
+# =========================
+# FIRESTORE
+# =========================
+@st.cache_resource
+def get_firestore_client():
+    if not FIREBASE_AVAILABLE:
+        raise RuntimeError("firebase-admin is not installed. Install it with: pip install firebase-admin")
 
-def add_feature_engineering(df):
-    df_fe = df.copy()
+    if not firebase_admin._apps:
+        service_account = st.secrets.get("gcp_service_account", None)
+        if service_account is None:
+            raise RuntimeError("Missing gcp_service_account in Streamlit secrets.")
 
-    # Ensure expected numeric columns are numeric when present
-    numeric_hint_cols = [
-        "Tenure", "CityTier", "WarehouseToHome", "HourSpendOnApp",
-        "NumberOfDeviceRegistered", "SatisfactionScore", "NumberOfAddress",
-        "Complain", "OrderAmountHikeFromlastYear", "CouponUsed",
-        "OrderCount", "DaySinceLastOrder", "CashbackAmount"
-    ]
-    for c in numeric_hint_cols:
-        if c in df_fe.columns:
-            df_fe[c] = pd.to_numeric(df_fe[c], errors="coerce")
+        service_account = dict(service_account)
 
-    # BLOCK 1: RFM-STYLE FEATURES
-    df_fe["Recency_Score"] = safe_div(df_fe["DaySinceLastOrder"], df_fe["Tenure"] + 1)
-    df_fe["Order_Frequency"] = safe_div(df_fe["OrderCount"], df_fe["Tenure"] + 1)
-    df_fe["Cashback_per_Order"] = safe_div(df_fe["CashbackAmount"], df_fe["OrderCount"] + 1)
-    df_fe["Coupon_per_Order"] = safe_div(df_fe["CouponUsed"], df_fe["OrderCount"] + 1)
-    df_fe["AvgHike_per_Order"] = safe_div(df_fe["OrderAmountHikeFromlastYear"], df_fe["OrderCount"] + 1)
-    df_fe["Recency_Bin"] = pd.cut(
-        df_fe["DaySinceLastOrder"], bins=[-1, 5, 15, 30, 9999], labels=[0, 1, 2, 3]
-    ).astype(float)
+        if "private_key" in service_account:
+            service_account["private_key"] = service_account["private_key"].replace("\\n", "\n")
 
-    # BLOCK 2: TENURE / LIFECYCLE FEATURES
-    df_fe["Lifecycle_Stage"] = pd.cut(
-        df_fe["Tenure"], bins=[-1, 1, 6, 12, 9999], labels=[0, 1, 2, 3]
-    ).astype(float)
-    df_fe["Tenure_sq"] = df_fe["Tenure"] ** 2
-    df_fe["App_Hours_per_Month"] = safe_div(df_fe["HourSpendOnApp"], df_fe["Tenure"] + 1)
-    df_fe["Address_per_Month"] = safe_div(df_fe["NumberOfAddress"], df_fe["Tenure"] + 1)
-    df_fe["Device_per_Month"] = safe_div(df_fe["NumberOfDeviceRegistered"], df_fe["Tenure"] + 1)
+        cred = credentials.Certificate(service_account)
+        firebase_admin.initialize_app(cred)
 
-    # BLOCK 3: SATISFACTION & COMPLAINT FEATURES
-    df_fe["Inv_Satisfaction"] = 6 - df_fe["SatisfactionScore"]
-    df_fe["Satisfaction_sq"] = df_fe["SatisfactionScore"] ** 2
-    df_fe["Complaint_Severity"] = df_fe["Complain"] * df_fe["Inv_Satisfaction"]
-    df_fe["Satisfaction_Decay"] = safe_div(df_fe["Inv_Satisfaction"], df_fe["Tenure"] + 1)
-    df_fe["Chronic_Dissatisfaction"] = (
-        (df_fe["Complain"] == 1) & (df_fe["SatisfactionScore"] <= 2)
-    ).astype(int)
-    df_fe["High_Risk_Flag"] = (
-        (df_fe["Complain"] == 1) & (df_fe["SatisfactionScore"] <= 3)
-    ).astype(int)
+    return firestore.client()
 
-    # BLOCK 4: ENGAGEMENT COMPOSITE FEATURES
-    _h = df_fe["HourSpendOnApp"] / (df_fe["HourSpendOnApp"].max() + 1e-9)
-    _oc = df_fe["OrderCount"] / (df_fe["OrderCount"].max() + 1e-9)
-    _cu = df_fe["CouponUsed"] / (df_fe["CouponUsed"].max() + 1e-9)
-    df_fe["Engagement_Score"] = (_h + _oc + _cu) / 3.0 * 100
-    df_fe["Low_Engagement_Flag"] = (df_fe["Order_Frequency"] < 1).astype(int)
-    df_fe["Tenure_x_OrderCount"] = df_fe["Tenure"] * df_fe["OrderCount"]
-    df_fe["App_x_Coupon"] = df_fe["HourSpendOnApp"] * df_fe["CouponUsed"]
-    df_fe["Satisfaction_x_Orders"] = df_fe["SatisfactionScore"] * df_fe["OrderCount"]
 
-    # BLOCK 5: DOMAIN-ENCODED RISK SCORES
-    _pay_risk = {
-        "Cash on Delivery": 3, "COD": 3, "E wallet": 2, "UPI": 2,
-        "Debit Card": 1, "Credit Card": 1, "CC": 1,
-    }
-    df_fe["Payment_Risk"] = df_fe["PreferredPaymentMode"].map(_pay_risk).fillna(2).astype(int)
+@st.cache_data(ttl=60)
+def fetch_firestore_customers(collection_name: str = CURRENT_COLLECTION) -> pd.DataFrame:
+    db = get_firestore_client()
+    docs = db.collection(collection_name).stream()
 
-    _cat_risk = {
-        "Mobile": 3, "Mobile Phone": 3, "Laptop & Accessory": 2,
-        "Others": 2, "Fashion": 1, "Grocery": 1,
-    }
-    df_fe["Category_Risk"] = df_fe["PreferedOrderCat"].map(_cat_risk).fillna(2).astype(int)
-    df_fe["CityTier_Risk"] = df_fe["CityTier"].map({1: 1, 2: 2, 3: 3}).fillna(2).astype(int)
+    rows = []
+    for doc in docs:
+        row = doc.to_dict()
+        row["firestore_doc_id"] = doc.id
+        rows.append(row)
 
-    # BLOCK 6: DISTANCE & DELIVERY FEATURES
-    df_fe["Log_WarehouseToHome"] = np.log1p(df_fe["WarehouseToHome"].clip(lower=0))
-    df_fe["Far_Warehouse"] = (
-        df_fe["WarehouseToHome"] > df_fe["WarehouseToHome"].quantile(0.75)
-    ).astype(int)
-    df_fe["Distance_x_Dissatisfaction"] = df_fe["WarehouseToHome"] * df_fe["Inv_Satisfaction"]
+    if not rows:
+        return pd.DataFrame()
 
-    # BLOCK 7: LOG TRANSFORMS
-    for c in [
-        "CashbackAmount",
-        "OrderAmountHikeFromlastYear",
-        "DaySinceLastOrder",
-        "NumberOfAddress",
-        "CouponUsed",
-        "OrderCount",
-    ]:
-        if c in df_fe.columns:
-            df_fe["Log_" + c] = np.log1p(df_fe[c].clip(lower=0))
+    df = pd.DataFrame(rows)
 
-    # BLOCK 8: POLYNOMIAL (SQUARED) FEATURES
-    for c in ["DaySinceLastOrder", "CashbackAmount", "WarehouseToHome"]:
-        if c in df_fe.columns:
-            df_fe[c + "_sq"] = df_fe[c] ** 2
+    for col in ["submitted_at", "promoted_at", "created_at_utc"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
 
-    # BLOCK 9: CASHBACK TIER
-    df_fe["Cashback_Tier"] = pd.cut(
-        df_fe["CashbackAmount"],
-        bins=[-1, 100, 175, 250, 99999],
-        labels=["Low", "Medium", "High", "Premium"],
-    ).astype(str)
+    if "CustomerID" not in df.columns and "firestore_doc_id" in df.columns:
+        df["CustomerID"] = df["firestore_doc_id"]
 
-    # BLOCK 10: COMPOSITE CHURN RISK SCORE
-    dsl_norm = df_fe["DaySinceLastOrder"] / (df_fe["DaySinceLastOrder"].max() + 1e-9)
-    ten_norm = 1 - df_fe["Tenure"] / (df_fe["Tenure"].max() + 1e-9)
-    cb_norm = 1 - df_fe["CashbackAmount"] / (df_fe["CashbackAmount"].max() + 1e-9)
-    df_fe["Composite_Risk_Score"] = (
-        df_fe["Complain"] * 3.0
-        + df_fe["Inv_Satisfaction"]
-        + dsl_norm
-        + ten_norm
-        + cb_norm
+    return df
+
+
+# =========================
+# ARTIFACT LOADING
+# =========================
+@st.cache_resource
+def load_artifacts():
+    pipeline = joblib.load(PIPELINE_PATH)
+    rf_model = joblib.load(RF_MODEL_PATH)
+    xgb_model = joblib.load(XGB_MODEL_PATH)
+    lgbm_model = joblib.load(LGBM_MODEL_PATH)
+
+    with open(META_PATH, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    return pipeline, rf_model, xgb_model, lgbm_model, meta
+
+
+def preprocess_for_ensemble(
+    df_input: pd.DataFrame,
+    pipeline,
+    selected_features: list[str],
+) -> pd.DataFrame:
+    X_processed = pipeline.transform(df_input)
+
+    if isinstance(X_processed, pd.DataFrame):
+        return X_processed
+
+    X_processed = pd.DataFrame(X_processed)
+
+    if len(selected_features) == X_processed.shape[1]:
+        X_processed.columns = selected_features
+
+    return X_processed
+
+
+def predict_weighted_ensemble(
+    X_processed: pd.DataFrame,
+    rf_model,
+    xgb_model,
+    lgbm_model,
+    w_rf: float,
+    w_xgb: float,
+    w_lgbm: float,
+) -> np.ndarray:
+    rf_proba = rf_model.predict_proba(X_processed)[:, 1]
+    xgb_proba = xgb_model.predict_proba(X_processed)[:, 1]
+    lgbm_proba = lgbm_model.predict_proba(X_processed)[:, 1]
+
+    y_proba = (
+        w_rf * rf_proba +
+        w_xgb * xgb_proba +
+        w_lgbm * lgbm_proba
     )
-    return df_fe
+    return y_proba
 
 
-# -- preprocessing (mirrors notebook) --
+# =========================
+# HEADER
+# =========================
+st.markdown(
+    """
+    # E-Commerce Churn Prediction Dashboard
+    **Live churn scoring using the weighted ensemble from `ensemble.ipynb`.**
+    """
+)
 
-def preprocess_like_notebook(df_model_input, num_imputer, cat_imputer, encoder, scaler, num_cols, cat_cols):
-    df_proc = df_model_input.copy()
-
-    num_cols_present = [c for c in num_cols if c in df_proc.columns]
-    cat_cols_present = [c for c in cat_cols if c in df_proc.columns]
-
-    for c in num_cols_present:
-        df_proc[c] = pd.to_numeric(df_proc[c], errors="coerce")
-
-    for c in cat_cols_present:
-        df_proc[c] = df_proc[c].astype(object)
-
-    if num_cols_present:
-        df_proc.loc[:, num_cols_present] = num_imputer.transform(df_proc[num_cols_present])
-        for c in num_cols_present:
-            df_proc[c] = pd.to_numeric(df_proc[c], errors="coerce")
-
-    if cat_cols_present:
-        cat_array = cat_imputer.transform(df_proc[cat_cols_present])
-        cat_df = pd.DataFrame(cat_array, columns=cat_cols_present, index=df_proc.index)
-
-        for c in cat_cols_present:
-            cat_df[c] = cat_df[c].astype(str)
-
-        encoded = encoder.transform(cat_df[cat_cols_present])
-        ohe_cols = encoder.get_feature_names_out(cat_cols_present)
-        df_proc_num = df_proc.drop(columns=cat_cols_present).reset_index(drop=True)
-        encoded_df = pd.DataFrame(encoded, columns=ohe_cols, index=df_proc_num.index)
-        df_proc = pd.concat([df_proc_num, encoded_df], axis=1)
-
-    # Keep feature order consistent for scaler
-    if hasattr(scaler, "feature_names_in_"):
-        scale_cols = [c for c in scaler.feature_names_in_ if c in df_proc.columns]
-    else:
-        scale_cols = df_proc.select_dtypes(include=[np.number]).columns.tolist()
-
-    if scale_cols:
-        df_proc.loc[:, scale_cols] = scaler.transform(df_proc[scale_cols])
-
-    # Final safety: cast all to numeric
-    for c in df_proc.columns:
-        df_proc[c] = pd.to_numeric(df_proc[c], errors="coerce")
-
-    return df_proc
-
-
-# ===== HEADER =====
-
-st.markdown("""
-# E-Commerce Churn Prediction Dashboard
-**Identify at-risk customers, understand churn drivers, and take targeted retention actions.**
-""")
-
-# ===== SIDEBAR =====
-
+# =========================
+# SIDEBAR
+# =========================
 with st.sidebar:
     st.markdown("## Dashboard Controls")
     st.markdown("---")
+
+    data_source = st.radio(
+        "Data Source",
+        options=["Firestore Live Data", "Upload CSV"],
+        index=0,
+    )
 
     threshold = st.slider(
         "Churn Probability Threshold",
@@ -351,140 +325,134 @@ with st.sidebar:
         max_value=0.95,
         value=0.50,
         step=0.01,
-        help="Customers with predicted probability above this value are classified as likely to churn.",
+        help="Customers above this probability are classified as likely churners.",
     )
 
-    st.markdown("---")
-    uploaded = st.file_uploader(
-        "Upload Customer CSV",
-        type=["csv"],
-        help="Upload a raw or feature-engineered CSV. If it contains a Churn column, evaluation metrics will be computed automatically.",
-    )
+    uploaded = None
+    if data_source == "Upload CSV":
+        st.markdown("---")
+        uploaded = st.file_uploader(
+            "Upload Customer CSV",
+            type=["csv"],
+            help="Upload a CSV with the same raw columns used in ensemble.ipynb.",
+        )
 
     st.markdown("---")
     with st.expander("Artifact Status", expanded=False):
         artifact_checks = {
-            "LightGBM Model": MODEL_PATH.exists(),
-            "Numerical Imputer": NUM_IMPUTER_PATH.exists(),
-            "Categorical Imputer": CAT_IMPUTER_PATH.exists(),
-            "Encoder": ENCODER_PATH.exists(),
-            "Scaler": SCALER_PATH.exists(),
+            "Preprocessing Pipeline": PIPELINE_PATH.exists(),
+            "Random Forest Model": RF_MODEL_PATH.exists(),
+            "XGBoost Model": XGB_MODEL_PATH.exists(),
+            "LightGBM Model": LGBM_MODEL_PATH.exists(),
             "Metadata": META_PATH.exists(),
             "Feature Importance": FEATURE_IMPORTANCE_PATH.exists(),
+            "Firebase Admin SDK": FIREBASE_AVAILABLE,
         }
         for name, ok in artifact_checks.items():
-            icon = "Available" if ok else "Missing"
-            st.markdown("**{}:** {}".format(name, icon))
+            st.markdown("**{}:** {}".format(name, "Available" if ok else "Missing"))
 
-# ===== LOAD ARTIFACTS =====
-
-@st.cache_resource
-def load_artifacts():
-    return (
-        joblib.load(NUM_IMPUTER_PATH),
-        joblib.load(CAT_IMPUTER_PATH),
-        joblib.load(ENCODER_PATH),
-        joblib.load(SCALER_PATH),
-        joblib.load(MODEL_PATH),
-        json.loads(META_PATH.read_text(encoding="utf-8")),
-    )
-
-
+# =========================
+# LOAD MODEL ARTIFACTS
+# =========================
 try:
-    num_imputer, cat_imputer, encoder, scaler, model, meta = load_artifacts()
+    pipeline, rf_model, xgb_model, lgbm_model, meta = load_artifacts()
 except Exception as e:
-    st.error("Failed to load model artifacts. Ensure all LightGBM .joblib and .json files are in the same folder as app.py.")
+    st.error("Failed to load ensemble artifacts. Make sure all exported notebook files are in the same folder as app.py.")
     st.exception(e)
     st.stop()
 
 target_col = meta.get("target", "Churn")
 raw_input_columns = meta.get("raw_input_columns", [])
-num_cols = meta.get("num_cols", [])
-cat_cols = meta.get("cat_cols", [])
+selected_features = meta.get("selected_features", [])
+weights = meta.get("weights", {})
+
+w_rf = float(weights.get("w_rf", 1 / 3))
+w_xgb = float(weights.get("w_xgb", 1 / 3))
+w_lgbm = float(weights.get("w_lgbm", 1 / 3))
 
 metrics_all = safe_read_csv(METRICS_ALL_MODELS_PATH)
 conf_all = safe_read_csv(CONFUSION_ALL_MODELS_PATH)
 feat_imp_external = safe_read_csv(FEATURE_IMPORTANCE_PATH)
 
-# ===== LANDING (no upload) =====
+# =========================
+# LOAD DATA
+# =========================
+if data_source == "Firestore Live Data":
+    try:
+        df = fetch_firestore_customers(CURRENT_COLLECTION)
+    except Exception as e:
+        st.error("Could not fetch Firestore data.")
+        st.exception(e)
+        st.stop()
 
-if uploaded is None:
-    st.markdown("---")
-    col_a, col_b, col_c = st.columns(3)
+    if df.empty:
+        st.warning("No records found in Firestore collection 'current_customers'.")
+        st.stop()
 
-    with col_a:
-        st.markdown("""
-        #### Getting Started
-        1. Upload a customer CSV using the sidebar.  
-        2. The model will score each customer automatically.  
-        3. Explore the interactive tabs for insights.
-        """)
+else:
+    if uploaded is None:
+        st.markdown("---")
+        st.info("Upload a CSV from the sidebar or switch to Firestore Live Data.")
+        st.stop()
 
-    with col_b:
-        st.markdown("""
-        #### Expected Columns
-        Your CSV should contain some or all of these raw features for best results:
-        """)
-        st.code(", ".join(RAW_FEATURE_COLUMNS[:9]), language=None)
-        st.code(", ".join(RAW_FEATURE_COLUMNS[9:]), language=None)
+    try:
+        df = pd.read_csv(uploaded)
+    except Exception as e:
+        st.error("Could not read the uploaded CSV.")
+        st.exception(e)
+        st.stop()
 
-    with col_c:
-        st.markdown("""
-        #### Tips
-        - Include a **Churn** column for evaluation metrics.  
-        - Include a **CustomerID** column for individual lookup.  
-        - Feature engineering is applied automatically.
-        """)
-
-    st.stop()
-
-# ===== READ & PREPARE UPLOAD =====
-
-try:
-    df = pd.read_csv(uploaded)
-except Exception as e:
-    st.error("Could not read the uploaded CSV.")
-    st.exception(e)
-    st.stop()
-
+# =========================
+# PREPARE DATA
+# =========================
 has_target = target_col in df.columns
 y_true = to_binary_series(df[target_col].copy()) if has_target else None
 
 df_original = df.copy()
 df_features = df.drop(columns=[target_col]).copy() if has_target else df.copy()
 
-required_for_fe = [c for c in RAW_FEATURE_COLUMNS if c in df_features.columns]
-if len(required_for_fe) == len(RAW_FEATURE_COLUMNS):
-    df_features = add_feature_engineering(df_features)
+metadata_cols = [
+    "source",
+    "submission_id",
+    "submitted_at",
+    "promoted_at",
+    "created_at_utc",
+    "validation_status",
+    "validation_errors",
+    "firestore_doc_id",
+]
+
+for col in metadata_cols:
+    if col in df_features.columns and col not in raw_input_columns:
+        df_features = df_features.drop(columns=[col])
 
 id_col_detected = pick_customer_id_column(df_features)
-if id_col_detected and id_col_detected in df_features.columns:
-    df_model_input = df_features.drop(columns=[id_col_detected]).copy()
-else:
-    df_model_input = df_features.copy()
 
-missing_for_model = [c for c in raw_input_columns if c not in df_model_input.columns]
+missing_for_model = [c for c in raw_input_columns if c not in df_features.columns]
 if raw_input_columns and missing_for_model:
-    st.error("Missing required feature columns:")
+    st.error("Missing required feature columns for the ensemble model.")
     st.write(missing_for_model)
     st.stop()
 
 if raw_input_columns:
-    df_model_input = df_model_input[raw_input_columns]
+    X_raw = df_features[raw_input_columns].copy()
+else:
+    X_raw = df_features.copy()
 
-# ===== PREDICT =====
-
+# =========================
+# SCORE
+# =========================
 try:
-    X_model = preprocess_like_notebook(
-        df_model_input,
-        num_imputer,
-        cat_imputer,
-        encoder,
-        scaler,
-        num_cols,
-        cat_cols,
+    X_model = preprocess_for_ensemble(X_raw, pipeline, selected_features)
+    proba = predict_weighted_ensemble(
+        X_model,
+        rf_model,
+        xgb_model,
+        lgbm_model,
+        w_rf,
+        w_xgb,
+        w_lgbm,
     )
-    proba = model.predict_proba(X_model)[:, 1]
     pred = (proba >= threshold).astype(int)
 except Exception as e:
     st.error("Prediction failed.")
@@ -492,19 +460,13 @@ except Exception as e:
     st.stop()
 
 out = df_original.copy()
-eng_cols_to_add = [c for c in df_features.columns if c not in out.columns]
-if eng_cols_to_add:
-    out = pd.concat(
-        [out.reset_index(drop=True), df_features[eng_cols_to_add].reset_index(drop=True)],
-        axis=1,
-    )
-
 out["Churn_probability"] = proba
 out["Churn_pred"] = pred
-out["Risk_Tier"] = risk_tier_from_proba(proba)
+out["Risk_Tier"] = risk_tier_from_proba(proba).astype(str)
 
-# ===== FILTERS =====
-
+# =========================
+# FILTERS
+# =========================
 st.markdown("---")
 with st.expander("Filters — Narrow by demographics and behaviour", expanded=False):
     filter_cols = [
@@ -518,15 +480,16 @@ with st.expander("Filters — Narrow by demographics and behaviour", expanded=Fa
     available_filters = [c for c in filter_cols if c in out.columns]
 
     if not available_filters:
-        st.caption("No standard filter columns found in this upload.")
+        st.caption("No standard filter columns found in this dataset.")
         filtered = out.copy()
     else:
         cols = st.columns(min(3, len(available_filters)))
         selected = {}
+
         for i, c in enumerate(available_filters):
             with cols[i % len(cols)]:
                 opts = sorted([x for x in out[c].dropna().unique().tolist()])
-                sel = st.multiselect("{}".format(c), options=opts, default=opts)
+                sel = st.multiselect(c, options=opts, default=opts)
                 selected[c] = set(sel)
 
         mask = np.ones(len(out), dtype=bool)
@@ -537,8 +500,9 @@ with st.expander("Filters — Narrow by demographics and behaviour", expanded=Fa
 
     st.info("Showing {:,} of {:,} customers after filters.".format(len(filtered), len(out)))
 
-# ===== KPI CARDS =====
-
+# =========================
+# KPI CARDS
+# =========================
 st.markdown("### Key Metrics")
 k1, k2, k3, k4 = st.columns(4)
 
@@ -559,14 +523,14 @@ if has_target and target_col in filtered.columns:
     k3.metric("Model Accuracy", "{:.3f}".format(acc_f))
     k4.metric("Recall", "{:.3f}".format(rec_f))
 else:
-    meta_metrics = meta.get("metrics", {})
-    k3.metric("Model Accuracy", "{:.3f}".format(meta_metrics.get("accuracy", 0)))
-    k4.metric("Recall", "{:.3f}".format(meta_metrics.get("recall", 0)))
+    k3.metric("Weight RF", "{:.3f}".format(w_rf))
+    k4.metric("Weight XGB / LGBM", "{:.3f} / {:.3f}".format(w_xgb, w_lgbm))
 
 st.markdown("---")
 
-# ===== TABS =====
-
+# =========================
+# TABS
+# =========================
 tab_model, tab_drivers, tab_segments, tab_lookup, tab_data, tab_conclusion = st.tabs([
     "Model Performance",
     "Top Churn Drivers",
@@ -576,9 +540,28 @@ tab_model, tab_drivers, tab_segments, tab_lookup, tab_data, tab_conclusion = st.
     "Model Conclusions",
 ])
 
-# -- TAB 1: MODEL PERFORMANCE --
+# =========================
+# TAB 1: MODEL PERFORMANCE
+# =========================
 with tab_model:
-    st.markdown("### LightGBM Performance")
+    st.markdown("### Weighted Ensemble Performance")
+
+    st.markdown(
+        """
+        This dashboard uses weighted ensemble probabilities from three chosen models:
+        - Preprocessing pipeline with imputation, interaction features, scaling, one-hot encoding, and SelectKBest
+        - Random Forest, XGBoost and LightGBM probability predictions
+        - Weighted averaging using recall-derived weights
+        """
+    )
+
+    weight_df = pd.DataFrame(
+        {
+            "Model": ["Random Forest", "XGBoost", "LightGBM"],
+            "Weight": [w_rf, w_xgb, w_lgbm],
+        }
+    )
+    st.dataframe(weight_df, use_container_width=True, hide_index=True)
 
     if has_target and target_col in filtered.columns:
         y_f = to_binary_series(filtered[target_col])
@@ -594,8 +577,6 @@ with tab_model:
         m3.metric("Recall", "{:.4f}".format(rec_v))
         m4.metric("F1 Score", "{:.4f}".format(f1v))
         m5.metric("ROC AUC", "{:.4f}".format(roc) if roc is not None else "N/A")
-
-        st.markdown("")
 
         col_cm, col_roc = st.columns(2)
 
@@ -632,8 +613,8 @@ with tab_model:
                         x=fpr,
                         y=tpr,
                         mode="lines",
-                        name="LightGBM (AUC = {:.4f})".format(roc),
-                        line=dict(color="#667eea", width=3),
+                        name="Weighted Ensemble (AUC = {:.4f})".format(roc),
+                        line=dict(width=3),
                     )
                 )
                 fig_roc.add_trace(
@@ -657,7 +638,7 @@ with tab_model:
             else:
                 st.info("ROC curve requires both classes in the filtered data.")
     else:
-        st.info("Upload a CSV with a Churn column to view evaluation metrics and charts.")
+        st.info("Live Firestore data is being scored for inference. Upload a CSV with a Churn column to view evaluation metrics.")
 
     if metrics_all is not None:
         st.markdown("---")
@@ -688,61 +669,11 @@ with tab_model:
             )
             st.plotly_chart(fig_comp, use_container_width=True)
 
-    if conf_all is not None and "Model" in conf_all.columns:
-        st.markdown("---")
-        st.markdown("### Confusion Matrix Comparison")
-        models = conf_all["Model"].unique().tolist()
-        chosen_model = st.selectbox("Select a model to inspect", models)
-        row_cm = conf_all.loc[conf_all["Model"] == chosen_model].iloc[0]
-        needed = ["TN", "FP", "FN", "TP"]
-
-        if all(k in conf_all.columns for k in needed):
-            cm_vals = np.array([
-                [int(row_cm["TN"]), int(row_cm["FP"])],
-                [int(row_cm["FN"]), int(row_cm["TP"])]
-            ])
-            labels = ["Stayed", "Churned"]
-            fig_cm2 = go.Figure(
-                data=go.Heatmap(
-                    z=cm_vals[::-1],
-                    x=labels,
-                    y=labels[::-1],
-                    text=cm_vals[::-1],
-                    texttemplate="%{text}",
-                    textfont=dict(size=18),
-                    colorscale="Oranges",
-                    showscale=False,
-                )
-            )
-            fig_cm2.update_layout(
-                title="Confusion Matrix - {}".format(chosen_model),
-                xaxis_title="Predicted",
-                yaxis_title="Actual",
-                height=380,
-                template=PLOTLY_TEMPLATE,
-            )
-            st.plotly_chart(fig_cm2, use_container_width=True)
-
-# -- TAB 2: TOP DRIVERS / SHAP --
+# =========================
+# TAB 2: TOP CHURN DRIVERS
+# =========================
 with tab_drivers:
-    st.markdown("### Actionable Churn Drivers")
-    st.caption("Understanding why customers churn enables targeted retention strategies.")
-
-    guide_data = [
-        ["Recency and Activity", "DaySinceLastOrder, Recency_Score", "Long gaps since last order strongly signal churn."],
-        ["Complaints", "Complain, Complaint_Severity", "Dissatisfied customers are far more likely to leave."],
-        ["Tenure", "Tenure, Lifecycle_Stage", "New customers churn more; long-tenured customers are stickier."],
-        ["Order Behaviour", "OrderCount, Order_Frequency", "Low purchase engagement increases churn risk."],
-        ["Financial", "CashbackAmount, Cashback_per_Order", "Incentives influence retention and repeat purchasing."],
-        ["Satisfaction", "SatisfactionScore, Inv_Satisfaction", "Direct customer sentiment signal."],
-        ["Composite Risk", "Composite_Risk_Score, High_Risk_Flag", "Engineered risk features support alerting."],
-        ["Logistics", "WarehouseToHome, Far_Warehouse", "Distance affects delivery experience and churn."],
-    ]
-    guide = pd.DataFrame(guide_data, columns=["Category", "Key Features", "Why It Matters"])
-    st.dataframe(guide, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.markdown("### SHAP Feature Importance")
+    st.markdown("### Top Churn Drivers")
 
     if feat_imp_external is not None and {"feature", "importance"}.issubset(feat_imp_external.columns):
         top_n = st.slider("Number of top features to display", 5, 40, 20, key="shap_top_n")
@@ -753,17 +684,11 @@ with tab_drivers:
                 x=fi["importance"].values[::-1],
                 y=fi["feature"].values[::-1],
                 orientation="h",
-                marker=dict(
-                    color=fi["importance"].values[::-1],
-                    colorscale="Viridis",
-                    showscale=True,
-                    colorbar=dict(title="SHAP"),
-                ),
             )
         )
         fig_shap.update_layout(
-            title="Top {} Features by Mean Absolute SHAP Value".format(top_n),
-            xaxis_title="Mean Absolute SHAP Value",
+            title="Top {} Features".format(top_n),
+            xaxis_title="Importance",
             height=max(400, top_n * 24),
             template=PLOTLY_TEMPLATE,
             margin=dict(l=200),
@@ -772,7 +697,9 @@ with tab_drivers:
     else:
         st.warning("feature_importance.csv not found. Export it from the notebook to enable this chart.")
 
-# -- TAB 3: RISK SEGMENTATION --
+# =========================
+# TAB 3: RISK SEGMENTATION
+# =========================
 with tab_segments:
     st.markdown("### Customer Risk Segmentation")
 
@@ -794,30 +721,23 @@ with tab_segments:
         st.plotly_chart(fig_pie, use_container_width=True)
 
     with col_pie2:
-        lc_col = None
-        if "Lifecycle_Stage_Label" in filtered.columns:
-            lc_col = "Lifecycle_Stage_Label"
-        elif "Lifecycle_Stage" in filtered.columns:
-            lc_col = "Lifecycle_Stage"
-
-        if lc_col:
-            lc_counts = filtered[lc_col].value_counts()
-            fig_lc = go.Figure(
+        if "PreferedOrderCat" in filtered.columns:
+            cat_counts = filtered["PreferedOrderCat"].astype(str).value_counts().head(10)
+            fig_cat = go.Figure(
                 go.Pie(
-                    labels=lc_counts.index.astype(str).tolist(),
-                    values=lc_counts.values.tolist(),
+                    labels=cat_counts.index.tolist(),
+                    values=cat_counts.values.tolist(),
                     hole=0.45,
                     textinfo="label+percent",
                     textfont=dict(size=14),
                 )
             )
-            fig_lc.update_layout(title="Lifecycle Stage Breakdown", height=420, template=PLOTLY_TEMPLATE)
-            st.plotly_chart(fig_lc, use_container_width=True)
+            fig_cat.update_layout(title="Top Order Categories", height=420, template=PLOTLY_TEMPLATE)
+            st.plotly_chart(fig_cat, use_container_width=True)
         else:
-            st.info("Lifecycle stage column not found.")
+            st.info("PreferedOrderCat not available.")
 
     st.markdown("---")
-
     st.markdown("#### Risk Tier Summary")
     tier_summary = filtered.groupby("Risk_Tier", observed=False).agg(
         Customers=("Churn_pred", "count"),
@@ -828,45 +748,15 @@ with tab_segments:
     tier_summary["Predicted_Churners"] = tier_summary["Predicted_Churners"].astype(int)
     st.dataframe(tier_summary, use_container_width=True, hide_index=True)
 
-    st.markdown("---")
-
-    st.markdown("#### Cashback Tier vs Churn Rate")
-    if "Cashback_Tier" in filtered.columns and has_target and target_col in filtered.columns:
-        tmp = filtered.copy()
-        tmp[target_col] = to_binary_series(tmp[target_col])
-        grp = tmp.groupby("Cashback_Tier", observed=False)[target_col].mean().reset_index()
-        grp.columns = ["Cashback_Tier", "Churn_Rate"]
-
-        fig_cb = px.bar(
-            grp,
-            x="Cashback_Tier",
-            y="Churn_Rate",
-            text=grp["Churn_Rate"].map("{:.1%}".format),
-            color="Churn_Rate",
-            color_continuous_scale="Reds",
-            labels={"Churn_Rate": "Churn Rate"},
-        )
-        fig_cb.update_layout(
-            title="Churn Rate by Cashback Tier (Actual)",
-            yaxis_tickformat=".0%",
-            height=380,
-            template=PLOTLY_TEMPLATE,
-            showlegend=False,
-        )
-        fig_cb.update_traces(textposition="outside")
-        st.plotly_chart(fig_cb, use_container_width=True)
-    elif "Cashback_Tier" not in filtered.columns:
-        st.info("Cashback_Tier not available.")
-    else:
-        st.info("Upload must include a Churn column to compute churn rate by Cashback Tier.")
-
-# -- TAB 4: INDIVIDUAL LOOKUP --
+# =========================
+# TAB 4: CUSTOMER LOOKUP
+# =========================
 with tab_lookup:
     st.markdown("### Individual Customer Lookup")
 
     id_col = pick_customer_id_column(filtered)
     if id_col is None:
-        st.warning("No CustomerID column found. Add one to enable individual lookup.")
+        st.warning("No CustomerID column found. Add one to enable lookup.")
     else:
         st.caption("Using ID column: `{}`".format(id_col))
 
@@ -894,29 +784,38 @@ with tab_lookup:
                 else "#8e44ad"
             )
 
-            h1.markdown("""
-            <div style="text-align:center; padding:20px; border-radius:12px; background:{}15; border:2px solid {};">
-                <div style="font-size:0.85rem; color:#666; font-weight:600;">CHURN PROBABILITY</div>
-                <div style="font-size:2.2rem; font-weight:700; color:{};">{:.1%}</div>
-            </div>
-            """.format(prob_colour, prob_colour, prob_colour, prob), unsafe_allow_html=True)
+            h1.markdown(
+                """
+                <div style="text-align:center; padding:20px; border-radius:12px; background:{0}15; border:2px solid {0};">
+                    <div style="font-size:0.85rem; color:#666; font-weight:600;">CHURN PROBABILITY</div>
+                    <div style="font-size:2.2rem; font-weight:700; color:{0};">{1:.1%}</div>
+                </div>
+                """.format(prob_colour, prob),
+                unsafe_allow_html=True,
+            )
 
             tier_colour = RISK_COLOURS.get(tier, "#999")
-            h2.markdown("""
-            <div style="text-align:center; padding:20px; border-radius:12px; background:{}15; border:2px solid {};">
-                <div style="font-size:0.85rem; color:#666; font-weight:600;">RISK TIER</div>
-                <div style="font-size:2.2rem; font-weight:700; color:{};">{}</div>
-            </div>
-            """.format(tier_colour, tier_colour, tier_colour, tier), unsafe_allow_html=True)
+            h2.markdown(
+                """
+                <div style="text-align:center; padding:20px; border-radius:12px; background:{0}15; border:2px solid {0};">
+                    <div style="font-size:0.85rem; color:#666; font-weight:600;">RISK TIER</div>
+                    <div style="font-size:2.2rem; font-weight:700; color:{0};">{1}</div>
+                </div>
+                """.format(tier_colour, tier),
+                unsafe_allow_html=True,
+            )
 
             pred_colour = "#e74c3c" if pred_label == 1 else "#2ecc71"
             pred_text = "Will Churn" if pred_label == 1 else "Will Stay"
-            h3.markdown("""
-            <div style="text-align:center; padding:20px; border-radius:12px; background:{}15; border:2px solid {};">
-                <div style="font-size:0.85rem; color:#666; font-weight:600;">PREDICTION</div>
-                <div style="font-size:2.2rem; font-weight:700; color:{};">{}</div>
-            </div>
-            """.format(pred_colour, pred_colour, pred_colour, pred_text), unsafe_allow_html=True)
+            h3.markdown(
+                """
+                <div style="text-align:center; padding:20px; border-radius:12px; background:{0}15; border:2px solid {0};">
+                    <div style="font-size:0.85rem; color:#666; font-weight:600;">PREDICTION</div>
+                    <div style="font-size:2.2rem; font-weight:700; color:{0};">{1}</div>
+                </div>
+                """.format(pred_colour, pred_text),
+                unsafe_allow_html=True,
+            )
 
             st.markdown("")
 
@@ -924,30 +823,31 @@ with tab_lookup:
 
             with col_snap:
                 st.markdown("#### Customer Profile")
-                driver_candidates = [
-                    "DaySinceLastOrder",
-                    "Recency_Score",
-                    "Complain",
-                    "Complaint_Severity",
+                preferred_cols = [
                     "Tenure",
-                    "Lifecycle_Stage",
-                    "OrderCount",
-                    "Order_Frequency",
-                    "CouponUsed",
-                    "CashbackAmount",
-                    "Cashback_Tier",
-                    "SatisfactionScore",
-                    "Composite_Risk_Score",
-                    "High_Risk_Flag",
-                    "Engagement_Score",
+                    "CityTier",
                     "WarehouseToHome",
+                    "HourSpendOnApp",
+                    "NumberOfDeviceRegistered",
+                    "SatisfactionScore",
+                    "NumberOfAddress",
+                    "Complain",
+                    "OrderAmountHikeFromlastYear",
+                    "CouponUsed",
+                    "OrderCount",
+                    "DaySinceLastOrder",
+                    "CashbackAmount",
+                    "PreferredLoginDevice",
+                    "PreferredPaymentMode",
+                    "Gender",
+                    "PreferedOrderCat",
+                    "MaritalStatus",
                 ]
-                snapshot_cols = [c for c in driver_candidates if c in row.index]
+                snapshot_cols = [c for c in preferred_cols if c in row.index]
                 if snapshot_cols:
-                    snapshot = pd.DataFrame({
-                        "Feature": snapshot_cols,
-                        "Value": [row[c] for c in snapshot_cols]
-                    })
+                    snapshot = pd.DataFrame(
+                        {"Feature": snapshot_cols, "Value": [row[c] for c in snapshot_cols]}
+                    )
                     st.dataframe(snapshot, use_container_width=True, hide_index=True)
 
             with col_action:
@@ -982,7 +882,9 @@ with tab_lookup:
             fig_gauge.update_layout(height=280, template=PLOTLY_TEMPLATE)
             st.plotly_chart(fig_gauge, use_container_width=True)
 
-# -- TAB 5: SCORED DATA --
+# =========================
+# TAB 5: SCORED DATA
+# =========================
 with tab_data:
     st.markdown("### Scored Customer Data")
 
@@ -993,13 +895,9 @@ with tab_data:
 
     st.markdown("")
 
-    show_n = st.slider(
-        "Rows to preview",
-        10,
-        min(500, len(filtered)),
-        min(100, len(filtered)),
-        key="data_rows",
-    )
+    max_rows = max(10, min(500, len(filtered)))
+    default_rows = min(100, len(filtered)) if len(filtered) > 0 else 10
+    show_n = st.slider("Rows to preview", 10, max_rows, default_rows, key="data_rows")
     st.dataframe(filtered.head(show_n), use_container_width=True, hide_index=True)
 
     st.download_button(
@@ -1016,14 +914,13 @@ with tab_data:
         filtered,
         x="Churn_probability",
         nbins=40,
-        color_discrete_sequence=["#667eea"],
         labels={"Churn_probability": "Churn Probability"},
     )
     fig_hist.add_vline(
         x=threshold,
         line_dash="dash",
         line_color="red",
-        annotation_text="Threshold ({})".format(threshold)
+        annotation_text="Threshold ({})".format(threshold),
     )
     fig_hist.update_layout(
         title="Distribution of Predicted Churn Probabilities",
@@ -1033,194 +930,52 @@ with tab_data:
     )
     st.plotly_chart(fig_hist, use_container_width=True)
 
-    if has_target and target_col in filtered.columns:
-        actual_rate = to_binary_series(filtered[target_col]).mean() * 100
-        st.info("Actual churn rate in filtered segment: {:.2f}%".format(actual_rate))
-
-# -- TAB 6: MODEL CONCLUSIONS --
+# =========================
+# TAB 6: MODEL CONCLUSIONS
+# =========================
 with tab_conclusion:
-    st.markdown("### Model Conclusions & How Each Model Works")
+    st.markdown("### Model Conclusions")
     st.markdown("---")
 
-    model_summary = pd.DataFrame({
-        "Model": [
-            "Logistic Regression",
-            "Random Forest",
-            "XGBoost",
-            "DNN (MLP)",
-            "LightGBM (Full)",
-            "LightGBM (Reduced)",
-            "LSTM",
-            "SVM (Baseline)",
-            "SVM (Tuned)",
-            "CatBoost",
-        ],
-        "F1 Score": [None, None, None, None, 0.97, 0.87, 0.45, None, 0.00, 0.905],
-        "ROC AUC": [None, None, None, None, 0.999, 0.99, 0.72, 0.50, None, 0.996],
-        "Verdict": [
-            "Baseline",
-            "Strong",
-            "Strong",
-            "Competitive",
-            "Best overall",
-            "Good (no risk features)",
-            "Poor fit",
-            "Poor fit",
-            "Poor fit",
-            "Very strong",
-        ],
-    })
+    st.markdown(
+        """
+        The deployed dashboard uses a **weighted ensemble**.
 
-    st.dataframe(model_summary, use_container_width=True, hide_index=True)
+        **Pipeline used in training and inference**
+        - Drop ID columns such as `CustomerID`
+        - Numeric preprocessing: median imputation, polynomial interaction features, standard scaling
+        - Categorical preprocessing: most-frequent imputation, one-hot encoding
+        - Feature selection: `SelectKBest(k=50)`
+        - Models: Random Forest, XGBoost, LightGBM
+        - Final prediction: weighted average of model probabilities using recall-derived weights
+        """
+    )
 
-    plot_df = model_summary.dropna(subset=["F1 Score", "ROC AUC"])
-    if not plot_df.empty:
-        fig_conc = go.Figure()
-        fig_conc.add_trace(go.Bar(
-            x=plot_df["Model"], y=plot_df["F1 Score"],
-            name="F1 Score", marker_color="#667eea",
-        ))
-        fig_conc.add_trace(go.Bar(
-            x=plot_df["Model"], y=plot_df["ROC AUC"],
-            name="ROC AUC", marker_color="#f39c12",
-        ))
-        fig_conc.update_layout(
-            barmode="group",
-            title="Model Performance Comparison — F1 Score vs ROC AUC",
-            yaxis_title="Score",
-            height=420,
-            template=PLOTLY_TEMPLATE,
-            legend=dict(orientation="h", y=-0.2),
-        )
-        st.plotly_chart(fig_conc, use_container_width=True)
+    conclusion_df = pd.DataFrame(
+        {
+            "Component": [
+                "Random Forest",
+                "XGBoost",
+                "LightGBM",
+                "Ensemble Strategy",
+            ],
+            "Role": [
+                "Captures robust non-linear tree interactions",
+                "Strong boosted learner with flexible decision boundaries",
+                "Efficient boosted tree model for tabular data",
+                "Combines all three using recall-normalised weights",
+            ],
+        }
+    )
+    st.dataframe(conclusion_df, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-
-    conclusions = [
-        {
-            "name": "Logistic Regression",
-            "how": (
-                "Logistic Regression fits a linear decision boundary by learning a weighted sum of features "
-                "passed through a sigmoid function. It estimates the probability that a customer churns based on "
-                "a linear combination of the input features."
-            ),
-            "result": (
-                "Serves as the baseline model. It is fast and interpretable but cannot capture the complex, "
-                "non-linear feature interactions critical for accurate churn prediction."
-            ),
-        },
-        {
-            "name": "Random Forest",
-            "how": (
-                "Random Forest builds an ensemble of many decision trees, each trained on a random subset of "
-                "data and features. Predictions are made by majority vote across all trees."
-            ),
-            "result": (
-                "Performed strongly and offered good interpretability through feature importance, though it can "
-                "be slower than boosting models at inference."
-            ),
-        },
-        {
-            "name": "XGBoost",
-            "how": (
-                "XGBoost is a sequential gradient boosting algorithm that builds trees one at a time, where each "
-                "new tree corrects the errors of the previous ensemble."
-            ),
-            "result": (
-                "Delivered excellent results, but this dashboard now deploys LightGBM instead."
-            ),
-        },
-        {
-            "name": "DNN (Deep Neural Network / MLP)",
-            "how": (
-                "The DNN uses a multi-layer perceptron architecture with dense layers and dropout for "
-                "regularisation. It learns non-linear feature representations through back-propagation."
-            ),
-            "result": (
-                "Showed competitive performance but is more complex to configure and less interpretable for "
-                "business stakeholders."
-            ),
-        },
-        {
-            "name": "LightGBM (Full Features)",
-            "how": (
-                "LightGBM uses a leaf-wise tree growth strategy, making it efficient and often highly accurate "
-                "for structured tabular datasets. It uses histogram-based splitting for speed."
-            ),
-            "result": (
-                "This is the deployed model in the dashboard. It achieved the strongest overall performance and "
-                "is well suited for churn prediction with engineered behavioural features."
-            ),
-        },
-        {
-            "name": "LightGBM (Reduced Features)",
-            "how": (
-                "This uses the same LightGBM algorithm but with a reduced feature set to test performance without "
-                "certain domain-engineered risk variables."
-            ),
-            "result": (
-                "Still performed very well, showing that core behaviour and engagement variables carry strong "
-                "predictive power even without all composite risk features."
-            ),
-        },
-        {
-            "name": "LSTM",
-            "how": (
-                "LSTM is a recurrent neural network designed for sequential data with time-dependent structure."
-            ),
-            "result": (
-                "It is not well suited for this flat tabular churn dataset and underperformed relative to tree-based models."
-            ),
-        },
-        {
-            "name": "SVM (Support Vector Machine)",
-            "how": (
-                "SVM finds a hyperplane that maximises the margin between classes and can model non-linear "
-                "boundaries through kernels."
-            ),
-            "result": (
-                "It struggled on this high-dimensional one-hot encoded churn problem and is not recommended here."
-            ),
-        },
-        {
-            "name": "CatBoost",
-            "how": (
-                "CatBoost uses ordered boosting and symmetric trees and handles categorical variables very well."
-            ),
-            "result": (
-                "A very strong alternative to LightGBM, especially when minimal categorical preprocessing is preferred."
-            ),
-        },
-    ]
-
-    for c in conclusions:
-        with st.expander(c["name"], expanded=False):
-            st.markdown("**How it works:** {}".format(c["how"]))
-            st.markdown("**Result & conclusion:** {}".format(c["result"]))
-
-    st.markdown("---")
-    st.markdown("### Final Recommendation")
-
-    rec_data = pd.DataFrame({
-        "Criterion": [
-            "Best overall performance",
-            "Currently deployed in dashboard",
-            "Best balance of simplicity & power",
-            "Best interpretability",
-            "Not recommended for this data",
-        ],
-        "Recommended Model": [
-            "LightGBM (Full Features)",
-            "LightGBM",
-            "CatBoost",
-            "Logistic Regression / Random Forest",
-            "LSTM, SVM",
-        ],
-    })
-    st.table(rec_data)
-
-    st.success(
-        "LightGBM is the deployed model in this dashboard and should be used for production scoring. "
-        "It provides strong predictive performance on this tabular churn dataset. "
-        "CatBoost remains a strong alternative, while LSTM and SVM are not competitive for this use case."
+    st.markdown(
+        """
+        **Why this setup is strong**
+        
+        Tree-based models are effective for tabular churn data because they capture non-linear patterns,
+        interaction effects, and mixed numeric-categorical behaviour well. The weighted ensemble improves
+        stability and balances strengths across the three models instead of relying on only one model.
+        """
     )

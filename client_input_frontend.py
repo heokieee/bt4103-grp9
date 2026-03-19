@@ -114,22 +114,37 @@ def get_firestore_client():
         service_account = st.secrets.get("gcp_service_account", None)
 
         if service_account is None:
-            raise RuntimeError(
-                "Missing gcp_service_account in Streamlit secrets."
-            )
+            raise RuntimeError("Missing gcp_service_account in Streamlit secrets.")
 
-        # Convert to dict (important)
         service_account = dict(service_account)
 
-        # Fix newline issue (important)
         if "private_key" in service_account:
             service_account["private_key"] = service_account["private_key"].replace("\\n", "\n")
-            
-        cred = credentials.Certificate(service_account)
 
+        cred = credentials.Certificate(service_account)
         firebase_admin.initialize_app(cred)
 
     return firestore.client()
+
+
+def get_next_customer_id(db) -> int:
+    docs = (
+        db.collection(CURRENT_COLLECTION)
+        .order_by("CustomerID", direction=firestore.Query.DESCENDING)
+        .limit(1)
+        .stream()
+    )
+
+    for doc in docs:
+        data = doc.to_dict() or {}
+        current_id = data.get("CustomerID", 0)
+        try:
+            return int(current_id) + 1
+        except (TypeError, ValueError):
+            return 1
+
+    return 1
+
 
 def validate_submission(payload: dict[str, Any], schema: dict[str, Any]) -> list[str]:
     errors: list[str] = []
@@ -137,12 +152,20 @@ def validate_submission(payload: dict[str, Any], schema: dict[str, Any]) -> list
     for col in schema["columns"]:
         value = payload.get(col)
 
-        # For new customers, churn label may be unknown at intake time.
         if col == TARGET_COL and value is None:
             continue
 
         if value is None or (isinstance(value, str) and not value.strip()):
             errors.append(f"{col}: value is required")
+            continue
+
+        if col == "CustomerID":
+            try:
+                customer_id = int(value)
+                if customer_id <= 0:
+                    errors.append("CustomerID: must be a positive integer")
+            except (TypeError, ValueError):
+                errors.append("CustomerID: must be an integer")
             continue
 
         if col in schema["numeric_cols"]:
@@ -202,14 +225,21 @@ def write_to_firestore(db, payload: dict[str, Any], errors: list[str]) -> tuple[
     return submission_id, promoted_id
 
 
-def build_form(schema: dict[str, Any]) -> dict[str, Any]:
+def build_form(schema: dict[str, Any], next_customer_id: int) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     columns = schema["columns"]
 
     left, right = st.columns(2)
+    visible_idx = 0
 
-    for idx, col in enumerate(columns):
-        container = left if idx % 2 == 0 else right
+    for col in columns:
+        if col == "CustomerID":
+            payload[col] = next_customer_id
+            continue
+
+        container = left if visible_idx % 2 == 0 else right
+        visible_idx += 1
+
         with container:
             if col == TARGET_COL:
                 selected = st.selectbox(
@@ -271,6 +301,7 @@ def main():
 - Source tag: `client_submission`
 - Invalid records stay in `customer_submissions`
 - Valid records are promoted to `current_customers`
+- CustomerID is auto-generated from Firestore
 - Credentials should come from Streamlit secrets
         """
     )
@@ -281,8 +312,16 @@ def main():
 
     schema = load_dataset_schema(CSV_PATH)
 
+    try:
+        db = get_firestore_client()
+        next_customer_id = get_next_customer_id(db)
+    except Exception as ex:
+        st.error("Could not connect to Firestore to generate the next CustomerID.")
+        st.code(str(ex))
+        st.stop()
+
     with st.form("new_customer_form"):
-        payload = build_form(schema)
+        payload = build_form(schema, next_customer_id)
         submitted = st.form_submit_button("Submit New Customer")
 
     if not submitted:
@@ -298,9 +337,9 @@ def main():
         st.success("Validation passed.")
 
     try:
-        db = get_firestore_client()
         submission_id, promoted_id = write_to_firestore(db, payload, validation_errors)
 
+        st.info(f"Assigned CustomerID: {payload['CustomerID']}")
         st.info(f"Written to '{SUBMISSIONS_COLLECTION}' with document ID: {submission_id}")
         if promoted_id:
             st.success(f"Promoted to '{CURRENT_COLLECTION}' with document ID: {promoted_id}")
