@@ -1,0 +1,17 @@
+feature,type,statistic,threshold,status,timestamp
+Tenure,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+WarehouseToHome,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+HourSpendOnApp,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+NumberOfDeviceRegistered,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+SatisfactionScore,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+NumberOfAddress,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+OrderAmountHikeFromlastYear,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+CouponUsed,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+OrderCount,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+DaySinceLastOrder,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+CashbackAmount,numeric,0.0,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-23T11:13:11.905647+00:00
+PreferredLoginDevice,categorical,1.0,p < 0.05 Warning,OK,2026-03-23T11:13:11.905647+00:00
+PreferredPaymentMode,categorical,1.0,p < 0.05 Warning,OK,2026-03-23T11:13:11.905647+00:00
+Gender,categorical,1.0,p < 0.05 Warning,OK,2026-03-23T11:13:11.905647+00:00
+PreferedOrderCat,categorical,1.0,p < 0.05 Warning,OK,2026-03-23T11:13:11.905647+00:00
+MaritalStatus,categorical,1.0,p < 0.05 Warning,OK,2026-03-23T11:13:11.905647+00:00
