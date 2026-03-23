@@ -105,7 +105,7 @@ META_PATH = BASE / "ensemble_metadata.json"
 
 METRICS_ALL_MODELS_PATH = BASE / "metrics_all_models.csv"
 CONFUSION_ALL_MODELS_PATH = BASE / "confusion_all_models.csv"
-FEATURE_IMPORTANCE_PATH = BASE / "feature_importance.csv"
+FEATURE_IMPORTANCE_PATH = BASE / "ensemble_shap_feature_importance.csv"
 
 CURRENT_COLLECTION = "current_customers"
 
@@ -302,7 +302,7 @@ def predict_weighted_ensemble(
 st.markdown(
     """
     # E-Commerce Churn Prediction Dashboard
-    **Live churn scoring using the weighted ensemble from `ensemble.ipynb`.**
+    **Live churn scoring using the weighted ensemble model**
     """
 )
 
@@ -675,27 +675,82 @@ with tab_model:
 with tab_drivers:
     st.markdown("### Top Churn Drivers")
 
-    if feat_imp_external is not None and {"feature", "importance"}.issubset(feat_imp_external.columns):
-        top_n = st.slider("Number of top features to display", 5, 40, 20, key="shap_top_n")
-        fi = feat_imp_external.sort_values("importance", ascending=False).head(top_n)
+    if feat_imp_external is not None and "feature" in feat_imp_external.columns:
 
-        fig_shap = go.Figure(
-            go.Bar(
-                x=fi["importance"].values[::-1],
-                y=fi["feature"].values[::-1],
-                orientation="h",
+        # -----------------------------------
+        # Clean feature names
+        # -----------------------------------
+        def clean_feature_name(f):
+            # Remove pipeline prefixes
+            f = f.replace("num__", "").replace("cat__", "")
+
+            # Handle one-hot encoded features
+            if "_" in f:
+                parts = f.split("_")
+                # if it's categorical encoding (last part is category)
+                if len(parts) > 1 and parts[-1].isalpha():
+                    return f"{parts[0]} = {parts[-1]}"
+            
+            # Handle interaction features (space separated)
+            if " " in f:
+                return " × ".join(f.split(" "))
+            
+            return f
+
+        feat_imp_external["clean_feature"] = feat_imp_external["feature"].apply(clean_feature_name)
+
+        # -----------------------------------
+        # Pick importance column
+        # -----------------------------------
+        if "ensemble_shap_importance" in feat_imp_external.columns:
+            importance_col = "ensemble_shap_importance"
+            chart_title = "Top Ensemble SHAP Drivers"
+        elif "importance" in feat_imp_external.columns:
+            importance_col = "importance"
+            chart_title = "Top Features"
+        else:
+            importance_col = None
+
+        if importance_col is not None:
+            top_n = st.slider("Number of top features to display", 5, 40, 20, key="shap_top_n")
+
+            fi = (
+                feat_imp_external[["clean_feature", importance_col]]
+                .dropna()
+                .sort_values(importance_col, ascending=False)
+                .head(top_n)
             )
-        )
-        fig_shap.update_layout(
-            title="Top {} Features".format(top_n),
-            xaxis_title="Importance",
-            height=max(400, top_n * 24),
-            template=PLOTLY_TEMPLATE,
-            margin=dict(l=200),
-        )
-        st.plotly_chart(fig_shap, use_container_width=True)
+
+            fig_shap = go.Figure(
+                go.Bar(
+                    x=fi[importance_col].values[::-1],
+                    y=fi["clean_feature"].values[::-1],
+                    orientation="h",
+                )
+            )
+
+            fig_shap.update_layout(
+                title=f"{chart_title} (Top {top_n})",
+                xaxis_title="Mean |SHAP value|",
+                yaxis_title="Feature",
+                height=max(400, top_n * 24),
+                template=PLOTLY_TEMPLATE,
+                margin=dict(l=200),
+            )
+
+            st.plotly_chart(fig_shap, use_container_width=True)
+
+            with st.expander("View feature importance table"):
+                st.dataframe(fi.reset_index(drop=True), use_container_width=True)
+
+        else:
+            st.warning(
+                "No valid importance column found. Expected 'ensemble_shap_importance' or 'importance'."
+            )
     else:
-        st.warning("feature_importance.csv not found. Export it from the notebook to enable this chart.")
+        st.warning(
+            "Feature importance CSV not found. Export 'ensemble_shap_feature_importance.csv' from notebook."
+        )
 
 # =========================
 # TAB 3: RISK SEGMENTATION
