@@ -667,14 +667,13 @@ except Exception as ex:
 # =========================
 # TABS
 # =========================
-tab_model, tab_drivers, tab_segments, tab_lookup, tab_data, tab_drift, tab_conclusion = st.tabs([
+tab_model, tab_drivers, tab_segments, tab_lookup, tab_data, tab_drift = st.tabs([
     "Model Performance",
     "Top Churn Drivers",
     "Risk Segmentation",
     "Customer Lookup",
     "Scored Data",
     "Data Drift",
-    "Model Conclusions",
 ])
 
 # =========================
@@ -1181,53 +1180,3 @@ with tab_drift:
             st.plotly_chart(fig_psi, use_container_width=True)
         else:
             st.info("No numerical PSI values available to plot.")
-
-# =========================
-# TAB 7: MODEL CONCLUSIONS
-# =========================
-with tab_conclusion:
-    st.markdown("### Model Conclusions")
-    st.markdown("---")
-
-    st.markdown(
-        """
-        The deployed dashboard uses a **weighted ensemble**.
-
-        **Pipeline used in training and inference**
-        - Drop ID columns such as `CustomerID`
-        - Numeric preprocessing: median imputation, polynomial interaction features, standard scaling
-        - Categorical preprocessing: most-frequent imputation, one-hot encoding
-        - Feature selection: `SelectKBest(k=50)`
-        - Models: Random Forest, XGBoost, LightGBM
-        - Final prediction: weighted average of model probabilities using recall-derived weights
-        """
-    )
-
-    conclusion_df = pd.DataFrame(
-        {
-            "Component": [
-                "Random Forest",
-                "XGBoost",
-                "LightGBM",
-                "Ensemble Strategy",
-            ],
-            "Role": [
-                "Captures robust non-linear tree interactions",
-                "Strong boosted learner with flexible decision boundaries",
-                "Efficient boosted tree model for tabular data",
-                "Combines all three using recall-normalised weights",
-            ],
-        }
-    )
-    st.dataframe(conclusion_df, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.markdown(
-        """
-        **Why this setup is strong**
-        
-        Tree-based models are effective for tabular churn data because they capture non-linear patterns,
-        interaction effects, and mixed numeric-categorical behaviour well. The weighted ensemble improves
-        stability and balances strengths across the three models instead of relying on only one model.
-        """
-    )
