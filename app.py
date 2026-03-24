@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 from typing import Optional
 
 import joblib
@@ -23,6 +26,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from drift_monitor import run_drift_monitor
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -40,6 +44,13 @@ try:
     FIREBASE_AVAILABLE = True
 except ImportError:
     FIREBASE_AVAILABLE = False
+
+try:
+    from google.cloud import storage
+
+    GCS_AVAILABLE = True
+except ImportError:
+    GCS_AVAILABLE = False
 
 
 # =========================
@@ -106,6 +117,8 @@ META_PATH = BASE / "ensemble_metadata.json"
 METRICS_ALL_MODELS_PATH = BASE / "metrics_all_models.csv"
 CONFUSION_ALL_MODELS_PATH = BASE / "confusion_all_models.csv"
 FEATURE_IMPORTANCE_PATH = BASE / "ensemble_shap_feature_importance.csv"
+REFERENCE_DATASET_PATH = BASE / "E Commerce Dataset.csv"
+DRIFT_REPORT_PATH = BASE / "drift_report.csv"
 
 CURRENT_COLLECTION = "current_customers"
 
@@ -120,6 +133,14 @@ DEFAULT_ID_CANDIDATES = [
 
 PLOTLY_TEMPLATE = "plotly_white"
 
+ARTIFACT_PATHS = [
+    PIPELINE_PATH,
+    RF_MODEL_PATH,
+    XGB_MODEL_PATH,
+    LGBM_MODEL_PATH,
+    META_PATH,
+]
+
 RISK_COLOURS = {
     "Low": "#2ecc71",
     "Medium": "#f39c12",
@@ -133,6 +154,57 @@ RISK_COLOURS = {
 # =========================
 def safe_read_csv(path: Path) -> Optional[pd.DataFrame]:
     return pd.read_csv(path) if path.exists() else None
+
+
+def get_model_bucket_config() -> tuple[str, str]:
+    bucket_name = str(st.secrets.get("model_bucket_name", "")).strip()
+    bucket_prefix = str(st.secrets.get("model_bucket_prefix", "ensemble")).strip()
+    return bucket_name, bucket_prefix
+
+
+def build_blob_name(prefix: str, file_name: str) -> str:
+    clean_prefix = prefix.strip().strip("/")
+    if not clean_prefix:
+        return file_name
+    return f"{clean_prefix}/{file_name}"
+
+
+def get_service_account_from_secrets() -> Optional[dict]:
+    service_account = st.secrets.get("gcp_service_account", None)
+    if service_account is None:
+        return None
+
+    service_account = dict(service_account)
+    if "private_key" in service_account:
+        service_account["private_key"] = service_account["private_key"].replace("\\n", "\n")
+    return service_account
+
+
+def sync_artifacts_from_bucket() -> tuple[bool, str]:
+    bucket_name, bucket_prefix = get_model_bucket_config()
+    if not bucket_name:
+        return True, "model_bucket_name not configured; using local artifacts."
+
+    if not GCS_AVAILABLE:
+        return False, "google-cloud-storage is not installed in this environment."
+
+    service_account = get_service_account_from_secrets()
+    if service_account is None:
+        return False, "Missing gcp_service_account in Streamlit secrets."
+
+    client = storage.Client.from_service_account_info(service_account)
+    bucket = client.bucket(bucket_name)
+
+    downloaded: list[str] = []
+    for local_path in ARTIFACT_PATHS:
+        blob_name = build_blob_name(bucket_prefix, local_path.name)
+        blob = bucket.blob(blob_name)
+        if not blob.exists(client):
+            return False, f"Missing artifact in bucket: gs://{bucket_name}/{blob_name}"
+        blob.download_to_filename(str(local_path))
+        downloaded.append(local_path.name)
+
+    return True, "Downloaded latest artifacts from bucket: " + ", ".join(downloaded)
 
 
 def to_binary_series(series: pd.Series) -> pd.Series:
@@ -296,6 +368,36 @@ def predict_weighted_ensemble(
     return y_proba
 
 
+def run_retraining_job() -> tuple[bool, str]:
+    service_account = get_service_account_from_secrets()
+    if service_account is None:
+        return False, "Missing gcp_service_account in Streamlit secrets."
+
+    retrain_script = BASE / "retrain.py"
+    if not retrain_script.exists():
+        return False, f"Retraining script not found: {retrain_script}"
+
+    bucket_name, bucket_prefix = get_model_bucket_config()
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=True) as temp_sa:
+        json.dump(service_account, temp_sa)
+        temp_sa.flush()
+
+        cmd = [sys.executable, str(retrain_script), "--service-account", temp_sa.name]
+        if bucket_name:
+            cmd.extend(["--bucket", bucket_name, "--bucket-prefix", bucket_prefix])
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(BASE))
+
+    output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+
+    if proc.returncode != 0:
+        return False, output.strip() or "Retraining failed without logs."
+
+    load_artifacts.clear()
+    fetch_firestore_customers.clear()
+    return True, output.strip() or "Retraining completed."
+
+
 # =========================
 # HEADER
 # =========================
@@ -347,13 +449,36 @@ with st.sidebar:
             "Metadata": META_PATH.exists(),
             "Feature Importance": FEATURE_IMPORTANCE_PATH.exists(),
             "Firebase Admin SDK": FIREBASE_AVAILABLE,
+            "GCS SDK": GCS_AVAILABLE,
         }
         for name, ok in artifact_checks.items():
             st.markdown("**{}:** {}".format(name, "Available" if ok else "Missing"))
 
+    st.markdown("---")
+    with st.expander("Model Maintenance", expanded=False):
+        st.caption("Runs retraining with Firestore data and updates ensemble artifacts.")
+
+        if st.button("Retrain Model", use_container_width=True):
+            with st.spinner("Retraining model... this may take a minute."):
+                ok, logs = run_retraining_job()
+
+            if ok:
+                st.success("Retraining completed and artifacts were refreshed.")
+                st.text_area("Retraining Output", value=logs, height=180)
+                st.rerun()
+            else:
+                st.error("Retraining failed.")
+                st.text_area("Retraining Output", value=logs, height=220)
+
 # =========================
 # LOAD MODEL ARTIFACTS
 # =========================
+sync_ok, sync_message = sync_artifacts_from_bucket()
+if not sync_ok:
+    st.error("Could not sync latest model artifacts from bucket.")
+    st.code(sync_message)
+    st.stop()
+
 try:
     pipeline, rf_model, xgb_model, lgbm_model, meta = load_artifacts()
 except Exception as e:
@@ -528,16 +653,27 @@ else:
 
 st.markdown("---")
 
+drift_report_df = None
+drift_error = None
+try:
+    drift_report_df = run_drift_monitor(
+        reference_csv_path=REFERENCE_DATASET_PATH,
+        current_df=df,
+        output_path=DRIFT_REPORT_PATH,
+    )
+except Exception as ex:
+    drift_error = str(ex)
+
 # =========================
 # TABS
 # =========================
-tab_model, tab_drivers, tab_segments, tab_lookup, tab_data, tab_conclusion = st.tabs([
+tab_model, tab_drivers, tab_segments, tab_lookup, tab_data, tab_drift = st.tabs([
     "Model Performance",
     "Top Churn Drivers",
     "Risk Segmentation",
     "Customer Lookup",
     "Scored Data",
-    "Model Conclusions",
+    "Data Drift",
 ])
 
 # =========================
@@ -986,51 +1122,61 @@ with tab_data:
     st.plotly_chart(fig_hist, use_container_width=True)
 
 # =========================
-# TAB 6: MODEL CONCLUSIONS
+# TAB 6: DATA DRIFT
 # =========================
-with tab_conclusion:
-    st.markdown("### Model Conclusions")
-    st.markdown("---")
+with tab_drift:
+    st.markdown("### Data Drift")
 
-    st.markdown(
-        """
-        The deployed dashboard uses a **weighted ensemble**.
+    if drift_error is not None:
+        st.error("Unable to compute drift report.")
+        st.code(drift_error)
+    elif drift_report_df is None or drift_report_df.empty:
+        st.info("No drift output available.")
+    else:
+        drift_count = int((drift_report_df["status"] == "Drift").sum())
 
-        **Pipeline used in training and inference**
-        - Drop ID columns such as `CustomerID`
-        - Numeric preprocessing: median imputation, polynomial interaction features, standard scaling
-        - Categorical preprocessing: most-frequent imputation, one-hot encoding
-        - Feature selection: `SelectKBest(k=50)`
-        - Models: Random Forest, XGBoost, LightGBM
-        - Final prediction: weighted average of model probabilities using recall-derived weights
-        """
-    )
+        if drift_count > 0:
+            st.error(f"{drift_count} features showing drift - consider retraining")
+        else:
+            st.success("No features currently flagged as Drift.")
 
-    conclusion_df = pd.DataFrame(
-        {
-            "Component": [
-                "Random Forest",
-                "XGBoost",
-                "LightGBM",
-                "Ensemble Strategy",
-            ],
-            "Role": [
-                "Captures robust non-linear tree interactions",
-                "Strong boosted learner with flexible decision boundaries",
-                "Efficient boosted tree model for tabular data",
-                "Combines all three using recall-normalised weights",
-            ],
-        }
-    )
-    st.dataframe(conclusion_df, use_container_width=True, hide_index=True)
+        def style_status_row(row: pd.Series) -> list[str]:
+            colour_map = {
+                "OK": "#e8f5e9",
+                "Warning": "#fff8e1",
+                "Drift": "#ffebee",
+            }
+            bg = colour_map.get(str(row.get("status", "")), "#ffffff")
+            return [f"background-color: {bg}" for _ in row]
 
-    st.markdown("---")
-    st.markdown(
-        """
-        **Why this setup is strong**
-        
-        Tree-based models are effective for tabular churn data because they capture non-linear patterns,
-        interaction effects, and mixed numeric-categorical behaviour well. The weighted ensemble improves
-        stability and balances strengths across the three models instead of relying on only one model.
-        """
-    )
+        st.dataframe(
+            drift_report_df.style.apply(style_status_row, axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        psi_df = drift_report_df[drift_report_df["type"] == "numeric"].copy()
+        psi_df["statistic"] = pd.to_numeric(psi_df["statistic"], errors="coerce")
+        psi_df = psi_df.dropna(subset=["statistic"])
+
+        if not psi_df.empty:
+            fig_psi = go.Figure(
+                go.Bar(
+                    x=psi_df["feature"],
+                    y=psi_df["statistic"],
+                    marker_color="#4c78a8",
+                    name="PSI",
+                )
+            )
+            fig_psi.add_hline(y=0.1, line_dash="dash", line_color="#f39c12", annotation_text="Warning 0.1")
+            fig_psi.add_hline(y=0.2, line_dash="dash", line_color="#e74c3c", annotation_text="Drift 0.2")
+            fig_psi.update_layout(
+                title="PSI by Numerical Feature",
+                xaxis_title="Feature",
+                yaxis_title="PSI",
+                height=420,
+                template=PLOTLY_TEMPLATE,
+            )
+            st.plotly_chart(fig_psi, use_container_width=True)
+        else:
+            st.info("No numerical PSI values available to plot.")
