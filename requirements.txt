@@ -14,5 +14,4 @@ seaborn==0.13.2
 firebase_admin==7.1.0
 google-cloud-firestore==2.21.0
 google-cloud-storage==3.4.1
-pyarrow==21.0.0
 requests==2.32.5
