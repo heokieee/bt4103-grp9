@@ -1,2 +1,0 @@
-retrained_at,data_source,firestore_record_count,training_row_count,before_f1,before_recall,after_f1,after_recall
-2026-03-23T10:09:28.826621+00:00,firestore,5634,5630,0.9625668449197861,0.9473684210526315,0.9625668449197861,0.9473684210526315

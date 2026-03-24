@@ -6,23 +6,23 @@
   "raw_input_columns": [
     "CustomerID",
     "Tenure",
+    "PreferredLoginDevice",
     "CityTier",
     "WarehouseToHome",
+    "PreferredPaymentMode",
+    "Gender",
     "HourSpendOnApp",
     "NumberOfDeviceRegistered",
+    "PreferedOrderCat",
     "SatisfactionScore",
+    "MaritalStatus",
     "NumberOfAddress",
     "Complain",
     "OrderAmountHikeFromlastYear",
     "CouponUsed",
     "OrderCount",
     "DaySinceLastOrder",
-    "CashbackAmount",
-    "PreferredLoginDevice",
-    "PreferredPaymentMode",
-    "Gender",
-    "PreferedOrderCat",
-    "MaritalStatus"
+    "CashbackAmount"
   ],
   "selected_features": [
     "num__Tenure",
@@ -77,9 +77,8 @@
     "cat__MaritalStatus_Single"
   ],
   "weights": {
-    "w_rf": 0.32894736842105265,
-    "w_xgb": 0.3383458646616541,
-    "w_lgbm": 0.3327067669172933
-  },
-  "retrained_at": "2026-03-23T10:09:28.826621+00:00"
+    "w_rf": 0.3283018867924528,
+    "w_xgb": 0.33773584905660375,
+    "w_lgbm": 0.3339622641509434
+  }
 }
