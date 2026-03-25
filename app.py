@@ -27,6 +27,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from drift_monitor import run_drift_monitor
+from frontend_core import (
+    CURRENT_COLLECTION as INTAKE_CURRENT_COLLECTION,
+    SOURCE_VALUE as INTAKE_SOURCE_VALUE,
+    SUBMISSIONS_COLLECTION as INTAKE_SUBMISSIONS_COLLECTION,
+    TARGET_COL as INTAKE_TARGET_COL,
+    get_next_customer_id as intake_get_next_customer_id,
+    load_dataset_schema as intake_load_dataset_schema,
+    validate_submission as intake_validate_submission,
+    write_to_firestore as intake_write_to_firestore,
+)
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -398,77 +408,233 @@ def run_retraining_job() -> tuple[bool, str]:
     return True, output.strip() or "Retraining completed."
 
 
+def build_intake_form(schema: dict[str, object], next_customer_id: int) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    columns = schema["columns"]
+
+    left, right = st.columns(2)
+    visible_idx = 0
+
+    for col in columns:
+        if col == "CustomerID":
+            payload[col] = next_customer_id
+            continue
+
+        container = left if visible_idx % 2 == 0 else right
+        visible_idx += 1
+
+        with container:
+            if col == INTAKE_TARGET_COL:
+                selected = st.selectbox(
+                    f"{col} (optional for new customers)",
+                    options=["Unknown", 0, 1],
+                    index=0,
+                    help="For fresh submissions, choose Unknown. Set 0/1 only if a known label exists.",
+                )
+                payload[col] = None if selected == "Unknown" else int(selected)
+                continue
+
+            if col in schema["numeric_cols"]:
+                stats = schema["numeric_stats"][col]
+                if stats["is_int"]:
+                    value = st.number_input(
+                        col,
+                        min_value=int(stats["min"]),
+                        max_value=int(stats["max"]),
+                        value=int(stats["median"]),
+                        step=1,
+                    )
+                    payload[col] = int(value)
+                else:
+                    value = st.number_input(
+                        col,
+                        min_value=float(stats["min"]),
+                        max_value=float(stats["max"]),
+                        value=float(stats["median"]),
+                        step=0.01,
+                    )
+                    payload[col] = float(value)
+            else:
+                options = schema["categorical_values"].get(col, [])
+                if options:
+                    payload[col] = st.selectbox(col, options=options)
+                else:
+                    payload[col] = st.text_input(col, value="")
+
+    return payload
+
+
+def render_intake_mode() -> None:
+    st.markdown(
+        """
+        # New Customer Intake
+        Submit a customer profile and write it to Firestore.
+        """
+    )
+
+    st.caption(
+        "Writes to customer_submissions, then promotes valid records to current_customers."
+    )
+
+    if not REFERENCE_DATASET_PATH.exists():
+        st.error(f"CSV file not found: {REFERENCE_DATASET_PATH}")
+        return
+
+    schema = intake_load_dataset_schema(REFERENCE_DATASET_PATH)
+
+    try:
+        db = get_firestore_client()
+        next_customer_id = intake_get_next_customer_id(
+            db,
+            firestore_module=firestore,
+            current_collection=INTAKE_CURRENT_COLLECTION,
+        )
+    except Exception as ex:
+        st.error("Could not connect to Firestore to generate the next CustomerID.")
+        st.code(str(ex))
+        return
+
+    with st.form("new_customer_form"):
+        payload = build_intake_form(schema, next_customer_id)
+        submitted = st.form_submit_button("Submit New Customer")
+
+    if not submitted:
+        return
+
+    validation_errors = intake_validate_submission(
+        payload,
+        schema,
+        target_col=INTAKE_TARGET_COL,
+    )
+
+    if validation_errors:
+        st.error("Validation failed. Record is captured in submissions but will not be promoted.")
+        for err in validation_errors:
+            st.write(f"- {err}")
+    else:
+        st.success("Validation passed.")
+
+    try:
+        submission_id, promoted_id = intake_write_to_firestore(
+            db,
+            firestore_module=firestore,
+            payload=payload,
+            errors=validation_errors,
+            source_value=INTAKE_SOURCE_VALUE,
+            submissions_collection=INTAKE_SUBMISSIONS_COLLECTION,
+            current_collection=INTAKE_CURRENT_COLLECTION,
+        )
+
+        st.info(f"Assigned CustomerID: {payload['CustomerID']}")
+        st.info(
+            "Written to '{}' with document ID: {}".format(
+                INTAKE_SUBMISSIONS_COLLECTION,
+                submission_id,
+            )
+        )
+        if promoted_id:
+            st.success(
+                "Promoted to '{}' with document ID: {}".format(
+                    INTAKE_CURRENT_COLLECTION,
+                    promoted_id,
+                )
+            )
+
+        if st.button("Go to Dashboard", use_container_width=True):
+            st.session_state["app_mode"] = "Dashboard"
+            st.rerun()
+
+    except Exception as ex:
+        st.warning("Could not write to Firestore yet. Check dependencies and secrets configuration.")
+        st.code(str(ex))
+
+
 # =========================
 # HEADER
 # =========================
-st.markdown(
-    """
-    # E-Commerce Churn Prediction Dashboard
-    **Live churn scoring using the weighted ensemble model**
-    """
-)
+st.markdown("# E-Commerce Customer Intelligence App")
 
 # =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
-    st.markdown("## Dashboard Controls")
+    st.markdown("## App Mode")
+    app_mode = st.radio(
+        "Select Experience",
+        options=["Dashboard", "New Customer Intake"],
+        index=0,
+        key="app_mode",
+    )
+
     st.markdown("---")
 
-    data_source = st.radio(
-        "Data Source",
-        options=["Firestore Live Data", "Upload CSV"],
-        index=0,
-    )
-
-    threshold = st.slider(
-        "Churn Probability Threshold",
-        min_value=0.05,
-        max_value=0.95,
-        value=0.50,
-        step=0.01,
-        help="Customers above this probability are classified as likely churners.",
-    )
-
+    data_source = "Firestore Live Data"
+    threshold = 0.50
     uploaded = None
-    if data_source == "Upload CSV":
+
+    if app_mode == "Dashboard":
+        st.markdown("## Dashboard Controls")
         st.markdown("---")
-        uploaded = st.file_uploader(
-            "Upload Customer CSV",
-            type=["csv"],
-            help="Upload a CSV with the same raw columns used in ensemble.ipynb.",
+
+        data_source = st.radio(
+            "Data Source",
+            options=["Firestore Live Data", "Upload CSV"],
+            index=0,
         )
 
-    st.markdown("---")
-    with st.expander("Artifact Status", expanded=False):
-        artifact_checks = {
-            "Preprocessing Pipeline": PIPELINE_PATH.exists(),
-            "Random Forest Model": RF_MODEL_PATH.exists(),
-            "XGBoost Model": XGB_MODEL_PATH.exists(),
-            "LightGBM Model": LGBM_MODEL_PATH.exists(),
-            "Metadata": META_PATH.exists(),
-            "Feature Importance": FEATURE_IMPORTANCE_PATH.exists(),
-            "Firebase Admin SDK": FIREBASE_AVAILABLE,
-            "GCS SDK": GCS_AVAILABLE,
-        }
-        for name, ok in artifact_checks.items():
-            st.markdown("**{}:** {}".format(name, "Available" if ok else "Missing"))
+        threshold = st.slider(
+            "Churn Probability Threshold",
+            min_value=0.05,
+            max_value=0.95,
+            value=0.50,
+            step=0.01,
+            help="Customers above this probability are classified as likely churners.",
+        )
 
-    st.markdown("---")
-    with st.expander("Model Maintenance", expanded=False):
-        st.caption("Runs retraining with Firestore data and updates ensemble artifacts.")
+        st.markdown("---")
+        if data_source == "Upload CSV":
+            uploaded = st.file_uploader(
+                "Upload Customer CSV",
+                type=["csv"],
+                help="Upload a CSV with the same raw columns used in ensemble.ipynb.",
+            )
 
-        if st.button("Retrain Model", use_container_width=True):
-            with st.spinner("Retraining model... this may take a minute."):
-                ok, logs = run_retraining_job()
+        st.markdown("---")
+        with st.expander("Artifact Status", expanded=False):
+            artifact_checks = {
+                "Preprocessing Pipeline": PIPELINE_PATH.exists(),
+                "Random Forest Model": RF_MODEL_PATH.exists(),
+                "XGBoost Model": XGB_MODEL_PATH.exists(),
+                "LightGBM Model": LGBM_MODEL_PATH.exists(),
+                "Metadata": META_PATH.exists(),
+                "Feature Importance": FEATURE_IMPORTANCE_PATH.exists(),
+                "Firebase Admin SDK": FIREBASE_AVAILABLE,
+                "GCS SDK": GCS_AVAILABLE,
+            }
+            for name, ok in artifact_checks.items():
+                st.markdown("**{}:** {}".format(name, "Available" if ok else "Missing"))
 
-            if ok:
-                st.success("Retraining completed and artifacts were refreshed.")
-                st.text_area("Retraining Output", value=logs, height=180)
-                st.rerun()
-            else:
-                st.error("Retraining failed.")
-                st.text_area("Retraining Output", value=logs, height=220)
+        st.markdown("---")
+        with st.expander("Model Maintenance", expanded=False):
+            st.caption("Runs retraining with Firestore data and updates ensemble artifacts.")
+
+            if st.button("Retrain Model", use_container_width=True):
+                with st.spinner("Retraining model... this may take a minute."):
+                    ok, logs = run_retraining_job()
+
+                if ok:
+                    st.success("Retraining completed and artifacts were refreshed.")
+                    st.text_area("Retraining Output", value=logs, height=180)
+                    st.rerun()
+                else:
+                    st.error("Retraining failed.")
+                    st.text_area("Retraining Output", value=logs, height=220)
+    else:
+        st.caption("Use this mode to capture and validate new customer records.")
+
+if app_mode == "New Customer Intake":
+    render_intake_mode()
+    st.stop()
 
 # =========================
 # LOAD MODEL ARTIFACTS
