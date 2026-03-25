@@ -63,3 +63,19 @@ PreferredPaymentMode,categorical,1.0,p < 0.05 Warning,OK,2026-03-25T04:07:31.914
 Gender,categorical,1.0,p < 0.05 Warning,OK,2026-03-25T04:07:31.914905+00:00
 PreferedOrderCat,categorical,1.0,p < 0.05 Warning,OK,2026-03-25T04:07:31.914905+00:00
 MaritalStatus,categorical,1.0,p < 0.05 Warning,OK,2026-03-25T04:07:31.914905+00:00
+Tenure,numeric,0.3219530501728573,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+WarehouseToHome,numeric,0.02335890824263576,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-25T13:53:48.530207+00:00
+HourSpendOnApp,numeric,2.9027510482839625,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+NumberOfDeviceRegistered,numeric,0.9854064024582256,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+SatisfactionScore,numeric,2.745346421577082,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+NumberOfAddress,numeric,0.024841649118245587,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-25T13:53:48.530207+00:00
+OrderAmountHikeFromlastYear,numeric,0.401622350143546,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+CouponUsed,numeric,0.4645095367275819,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+OrderCount,numeric,0.587333441906482,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+DaySinceLastOrder,numeric,0.04828763739755873,PSI > 0.2 Drift; > 0.1 Warning,OK,2026-03-25T13:53:48.530207+00:00
+CashbackAmount,numeric,1.6129772871501737,PSI > 0.2 Drift; > 0.1 Warning,Drift,2026-03-25T13:53:48.530207+00:00
+PreferredLoginDevice,categorical,0.0026615144920639614,p < 0.05 Warning,Warning,2026-03-25T13:53:48.530207+00:00
+PreferredPaymentMode,categorical,1.7714030476500328e-05,p < 0.05 Warning,Warning,2026-03-25T13:53:48.530207+00:00
+Gender,categorical,0.3221504790523,p < 0.05 Warning,OK,2026-03-25T13:53:48.530207+00:00
+PreferedOrderCat,categorical,1.134854353593785e-06,p < 0.05 Warning,Warning,2026-03-25T13:53:48.530207+00:00
+MaritalStatus,categorical,2.125946399449982e-08,p < 0.05 Warning,Warning,2026-03-25T13:53:48.530207+00:00

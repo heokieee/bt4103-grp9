@@ -13,12 +13,14 @@ Model logic:
 
 from __future__ import annotations
 
+import time
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 from typing import Optional
+from google.api_core.exceptions import ResourceExhausted
 
 import joblib
 import numpy as np
@@ -297,30 +299,41 @@ def get_firestore_client():
     return firestore.client()
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_firestore_customers(collection_name: str = CURRENT_COLLECTION) -> pd.DataFrame:
     db = get_firestore_client()
-    docs = db.collection(collection_name).stream()
+    retry_delays = [1, 2, 4, 8]
 
-    rows = []
-    for doc in docs:
-        row = doc.to_dict()
-        row["firestore_doc_id"] = doc.id
-        rows.append(row)
+    for attempt, delay in enumerate(retry_delays, start=1):
+        try:
+            print(f"FIRESTORE FETCH at {time.strftime('%H:%M:%S')}")
+            docs = db.collection(collection_name).limit(50).stream()
+            rows = []
+            for doc in docs:
+                row = doc.to_dict()
+                row["firestore_doc_id"] = doc.id
+                rows.append(row)
 
-    if not rows:
-        return pd.DataFrame()
+            if not rows:
+                return pd.DataFrame()
 
-    df = pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
 
-    for col in ["submitted_at", "promoted_at", "created_at_utc"]:
-        if col in df.columns:
-            df[col] = df[col].astype(str)
+            for col in ["submitted_at", "promoted_at", "created_at_utc"]:
+                if col in df.columns:
+                    df[col] = df[col].astype(str)
 
-    if "CustomerID" not in df.columns and "firestore_doc_id" in df.columns:
-        df["CustomerID"] = df["firestore_doc_id"]
+            if "CustomerID" not in df.columns and "firestore_doc_id" in df.columns:
+                df["CustomerID"] = df["firestore_doc_id"]
 
-    return df
+            return df
+
+        except ResourceExhausted:
+            if attempt == len(retry_delays):
+                raise
+            time.sleep(delay)
+
+    return pd.DataFrame()
 
 
 # =========================
@@ -670,7 +683,13 @@ feat_imp_external = safe_read_csv(FEATURE_IMPORTANCE_PATH)
 # =========================
 if data_source == "Firestore Live Data":
     try:
+        db = get_firestore_client()
+        st.write("Connected project:", db.project)
+
         df = fetch_firestore_customers(CURRENT_COLLECTION)
+    except ResourceExhausted:
+        st.error("Firestore quota exceeded (429). Please wait a few minutes and try again.")
+        st.stop()
     except Exception as e:
         st.error("Could not fetch Firestore data.")
         st.exception(e)
