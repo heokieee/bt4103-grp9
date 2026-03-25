@@ -287,10 +287,11 @@ def get_firestore_client():
     return firestore.client()
 
 
-@st.cache_data(ttl=60)
-def fetch_firestore_customers(collection_name: str = CURRENT_COLLECTION) -> pd.DataFrame:
+@st.cache_data
+def fetch_firestore_customers(collection_name: str = CURRENT_COLLECTION, limit: int = 5000) -> pd.DataFrame:
     db = get_firestore_client()
-    docs = db.collection(collection_name).stream()
+    # Use limit to cap reads instead of full collection scan
+    docs = db.collection(collection_name).limit(limit).stream()
 
     rows = []
     for doc in docs:
@@ -433,10 +434,22 @@ with st.sidebar:
     uploaded = None
     if data_source == "Upload CSV":
         st.markdown("---")
+<<<<<<< Updated upstream
         uploaded = st.file_uploader(
             "Upload Customer CSV",
             type=["csv"],
             help="Upload a CSV with the same raw columns used in ensemble.ipynb.",
+=======
+
+        if st.button("🔄 Refresh Data from Firestore", use_container_width=True):
+            fetch_firestore_customers.clear()
+            st.rerun()
+
+        data_source = st.radio(
+            "Data Source",
+            options=["Firestore Live Data", "Upload CSV"],
+            index=0,
+>>>>>>> Stashed changes
         )
 
     st.markdown("---")

@@ -194,7 +194,8 @@ def fetch_firestore_dataframe(service_account_path: str) -> pd.DataFrame:
     db = firestore.client(app=app)
 
     rows: list[dict[str, Any]] = []
-    for doc in db.collection(COLLECTION_NAME).stream():
+    # Use limit to avoid reading excessive documents unnecessarily
+    for doc in db.collection(COLLECTION_NAME).limit(10000).stream():
         record = doc.to_dict() or {}
         rows.append(record)
 

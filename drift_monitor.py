@@ -65,7 +65,8 @@ def load_current_distribution(
 
     db = firestore.client()
     rows = []
-    for doc in db.collection(collection_name).stream():
+    # Add limit to prevent excessive reads when fallback is used
+    for doc in db.collection(collection_name).limit(10000).stream():
         rows.append(doc.to_dict() or {})
 
     return pd.DataFrame(rows)
