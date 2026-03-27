@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -125,6 +126,7 @@ RF_MODEL_PATH = BASE / "ensemble_rf_model.joblib"
 XGB_MODEL_PATH = BASE / "ensemble_xgb_model.joblib"
 LGBM_MODEL_PATH = BASE / "ensemble_lgbm_model.joblib"
 META_PATH = BASE / "ensemble_metadata.json"
+RETRAIN_LOG_PATH = BASE / "retrain_log.csv"
 
 METRICS_ALL_MODELS_PATH = BASE / "metrics_all_models.csv"
 CONFUSION_ALL_MODELS_PATH = BASE / "confusion_all_models.csv"
@@ -199,6 +201,72 @@ def get_service_account_from_secrets() -> Optional[dict]:
     if "private_key" in service_account:
         service_account["private_key"] = service_account["private_key"].replace("\\n", "\n")
     return service_account
+
+
+def parse_iso_datetime(value: object) -> Optional[datetime]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    # Support both ...Z and ...+00:00 formats.
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def get_last_retrained_at_from_metadata() -> Optional[datetime]:
+    if not META_PATH.exists():
+        return None
+    try:
+        with open(META_PATH, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        return None
+    return parse_iso_datetime(meta.get("retrained_at"))
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_retrain_readiness(threshold: int) -> dict[str, object]:
+    db = get_firestore_client()
+    last_retrained_at = get_last_retrained_at_from_metadata()
+
+    total_client_rows = 0
+    new_client_rows = 0
+
+    for doc in db.collection(CURRENT_COLLECTION).stream():
+        row = doc.to_dict() or {}
+        if row.get("source") != INTAKE_SOURCE_VALUE:
+            continue
+
+        total_client_rows += 1
+        created_at = parse_iso_datetime(row.get("created_at_utc"))
+
+        # If we never retrained before, use total client-added rows as the gate.
+        if last_retrained_at is None:
+            new_client_rows += 1
+            continue
+
+        if created_at is not None and created_at > last_retrained_at:
+            new_client_rows += 1
+
+    ready = new_client_rows >= threshold
+
+    return {
+        "ready": ready,
+        "threshold": threshold,
+        "new_client_rows": new_client_rows,
+        "total_client_rows": total_client_rows,
+        "last_retrained_at": (
+            last_retrained_at.isoformat() if last_retrained_at is not None else None
+        ),
+    }
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -469,6 +537,7 @@ def run_retraining_job() -> tuple[bool, str]:
     sync_artifacts_from_bucket.clear()
     load_artifacts.clear()
     fetch_firestore_customers.clear()
+    get_retrain_readiness.clear()
     return True, output.strip() or "Retraining completed."
 
 
@@ -679,17 +748,77 @@ with st.sidebar:
                 st.markdown("**{}:** {}".format(name, "Available" if ok else "Missing"))
 
         st.markdown("---")
-        with st.expander("Model Maintenance", expanded=False):
-            st.caption("Runs retraining with Firestore data and updates ensemble artifacts.")
+        with st.expander("🔄 Model Retraining", expanded=True):
 
+            # ── 1. Last retrained timestamp ───────────────────────────────
+            last_retrained_dt = get_last_retrained_at_from_metadata()
+            if last_retrained_dt is not None:
+                last_retrained_label = last_retrained_dt.strftime("%d %b %Y, %H:%M UTC")
+            else:
+                last_retrained_label = "Never"
+            st.metric("Last Retrained", last_retrained_label)
+
+            # ── 2. Firestore record count (IDs only, minimal read cost) ───
+            firestore_record_count: Optional[int] = None
+            try:
+                db = get_firestore_client()
+                docs = list(db.collection("current_customers").select([]).stream())
+                firestore_record_count = len(docs)
+                st.metric("Firestore Records Available", firestore_record_count)
+            except Exception as ex:
+                st.warning("Could not fetch Firestore record count.")
+                st.code(str(ex))
+
+            # ── 3. Data readiness indicator ───────────────────────────────
+            if firestore_record_count is not None:
+                if firestore_record_count >= 200:
+                    st.success(
+                        f"✅ {firestore_record_count} records in Firestore — "
+                        "retrain will use **live data**."
+                    )
+                else:
+                    st.info(
+                        f"ℹ️ Only {firestore_record_count} records in Firestore (minimum 200 "
+                        "recommended). Retrain will **fall back to the original CSV**."
+                    )
+
+            # ── 4. Last run metrics from retrain_log.csv ──────────────────
+            if RETRAIN_LOG_PATH.exists():
+                try:
+                    log_df = pd.read_csv(RETRAIN_LOG_PATH)
+                    if not log_df.empty:
+                        last_run = log_df.iloc[-1]
+                        col_f1, col_rec = st.columns(2)
+                        after_f1 = last_run.get("after_f1", float("nan"))
+                        after_rec = last_run.get("after_recall", float("nan"))
+                        col_f1.metric(
+                            "Last Run F1",
+                            f"{after_f1:.4f}" if after_f1 == after_f1 else "N/A",
+                        )
+                        col_rec.metric(
+                            "Last Run Recall",
+                            f"{after_rec:.4f}" if after_rec == after_rec else "N/A",
+                        )
+                except Exception:
+                    pass
+
+            # ── 5. Guidance text ──────────────────────────────────────────
+            st.caption(
+                "Retrain when model performance degrades or significant new data has accumulated. "
+                "Each run replaces the ensemble artifacts and reloads the dashboard automatically."
+            )
+
+            # ── 6. Retrain button — always enabled ────────────────────────
             if st.button("Retrain Model", use_container_width=True):
-                with st.spinner("Retraining model... this may take a minute."):
+                with st.spinner("Retraining model… this may take a minute."):
                     ok, _logs = run_retraining_job()
 
                 if ok:
                     st.success("Retraining completed and artifacts were refreshed.")
+                    st.rerun()
                 else:
                     st.error("Retraining failed.")
+                    st.code(_logs)
     else:
         st.caption("Use this mode to capture and validate new customer records.")
 
