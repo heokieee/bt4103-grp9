@@ -684,14 +684,12 @@ with st.sidebar:
 
             if st.button("Retrain Model", use_container_width=True):
                 with st.spinner("Retraining model... this may take a minute."):
-                    ok, logs = run_retraining_job()
+                    ok, _logs = run_retraining_job()
 
                 if ok:
                     st.success("Retraining completed and artifacts were refreshed.")
-                    st.text_area("Retraining Output", value=logs, height=180)
                 else:
                     st.error("Retraining failed.")
-                    st.text_area("Retraining Output", value=logs, height=220)
     else:
         st.caption("Use this mode to capture and validate new customer records.")
 
