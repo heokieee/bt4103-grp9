@@ -14,6 +14,7 @@ from imblearn.over_sampling import SMOTE
 from lightgbm import LGBMClassifier
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import f1_score, recall_score
@@ -437,15 +438,42 @@ def main() -> None:
     smote = SMOTE(random_state=RANDOM_STATE)
     X_train_smote, y_train_smote = smote.fit_resample(X_train_processed, y_train)
 
-    rf_model = clone(old_rf_model)
-    xgb_model = clone(old_xgb_model)
-    lgbm_model = clone(old_lgbm_model)
-
-    # Keep explicit model types for readability in logs/errors.
-    if not isinstance(xgb_model, XGBClassifier):
-        raise TypeError("Loaded XGBoost artifact is not an XGBClassifier.")
-    if not isinstance(lgbm_model, LGBMClassifier):
-        raise TypeError("Loaded LightGBM artifact is not an LGBMClassifier.")
+    # Clone hyperparameters from prior models if available, otherwise use
+    # the same defaults that ensemble.ipynb used — this means cold start works
+    # even when no joblib files exist yet.
+    if prior_artifacts_exist and "old_rf_model" in dir():
+        rf_model = clone(old_rf_model)
+        xgb_model = clone(old_xgb_model)
+        lgbm_model = clone(old_lgbm_model)
+    else:
+        rf_model = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=20,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=RANDOM_STATE,
+            n_jobs=-1,
+        )
+        xgb_model = XGBClassifier(
+            n_estimators=300,
+            max_depth=6,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            use_label_encoder=False,
+            eval_metric="logloss",
+            random_state=RANDOM_STATE,
+        )
+        lgbm_model = LGBMClassifier(
+            n_estimators=300,
+            max_depth=6,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=RANDOM_STATE,
+            n_jobs=-1,
+            verbose=-1,
+        )
 
     rf_model.fit(X_train_smote, y_train_smote)
     xgb_model.fit(X_train_smote, y_train_smote)

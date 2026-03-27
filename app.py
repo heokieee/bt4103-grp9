@@ -201,6 +201,7 @@ def get_service_account_from_secrets() -> Optional[dict]:
     return service_account
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def sync_artifacts_from_bucket() -> tuple[bool, str]:
     bucket_name, bucket_prefix = get_model_bucket_config()
     if not bucket_name:
@@ -435,14 +436,23 @@ def run_retraining_job() -> tuple[bool, str]:
         f"bucket_prefix={bucket_prefix}",
     )
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=True) as temp_sa:
+    # delete=False so the file persists until retrain.py subprocess finishes
+    # reading it. We delete it manually in the finally block.
+    temp_sa = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    try:
         json.dump(service_account, temp_sa)
         temp_sa.flush()
+        temp_sa.close()  # Close before subprocess opens it.
 
         cmd = [sys.executable, str(retrain_script), "--service-account", temp_sa.name]
         if bucket_name:
             cmd.extend(["--bucket", bucket_name, "--bucket-prefix", bucket_prefix])
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(BASE))
+    finally:
+        try:
+            Path(temp_sa.name).unlink(missing_ok=True)
+        except Exception:
+            pass
 
     output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
 
@@ -456,6 +466,7 @@ def run_retraining_job() -> tuple[bool, str]:
     if proc.returncode != 0:
         return False, output.strip() or "Retraining failed without logs."
 
+    sync_artifacts_from_bucket.clear()
     load_artifacts.clear()
     fetch_firestore_customers.clear()
     return True, output.strip() or "Retraining completed."
