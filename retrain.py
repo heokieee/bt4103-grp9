@@ -126,8 +126,24 @@ def upload_artifacts_to_bucket(
     bucket_name: str,
     bucket_prefix: str,
 ) -> list[str]:
-    client = storage.Client.from_service_account_json(service_account_path)
-    bucket = client.bucket(bucket_name)
+    print(f"Connecting to GCS bucket: {bucket_name}")
+
+    try:
+        client = storage.Client.from_service_account_json(service_account_path)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to create GCS client: {exc}") from exc
+
+    try:
+        bucket = client.bucket(bucket_name)
+        # Force metadata fetch to confirm the bucket exists and is accessible.
+        bucket.reload()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot access bucket '{bucket_name}'. "
+            "Check the bucket name and that your service account has "
+            "'Storage Object Admin' role in GCP IAM.\n"
+            f"Original error: {exc}"
+        ) from exc
 
     files_to_upload = [
         PIPELINE_PATH,
@@ -140,10 +156,15 @@ def upload_artifacts_to_bucket(
 
     uploaded_objects: list[str] = []
     for file_path in files_to_upload:
+        if not file_path.exists():
+            print(f"  WARNING: {file_path.name} not found locally, skipping.")
+            continue
         blob_name = build_blob_name(bucket_prefix, file_path.name)
         blob = bucket.blob(blob_name)
+        print(f"  Uploading {file_path.name} -> gs://{bucket_name}/{blob_name}")
         blob.upload_from_filename(str(file_path))
         uploaded_objects.append(blob_name)
+        print("  Done.")
 
     return uploaded_objects
 
@@ -189,8 +210,14 @@ def coerce_schema(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fetch_firestore_dataframe(service_account_path: str) -> pd.DataFrame:
+    import firebase_admin
+
     cred = credentials.Certificate(service_account_path)
-    app = initialize_app(cred)
+    # Guard against double-initialisation (e.g. during testing or reimport).
+    if not firebase_admin._apps:
+        app = initialize_app(cred)
+    else:
+        app = firebase_admin.get_app()
     db = firestore.client(app=app)
 
     rows: list[dict[str, Any]] = []
@@ -366,26 +393,42 @@ def main() -> None:
         random_state=RANDOM_STATE,
     )
 
-    old_pipeline = joblib.load(PIPELINE_PATH)
-    old_rf_model = joblib.load(RF_MODEL_PATH)
-    old_xgb_model = joblib.load(XGB_MODEL_PATH)
-    old_lgbm_model = joblib.load(LGBM_MODEL_PATH)
-    with open(META_PATH, "r", encoding="utf-8") as f:
-        old_meta = json.load(f)
-
-    old_selected_features = old_meta.get("selected_features", [])
-    old_weights = old_meta.get("weights", {"w_rf": 1 / 3, "w_xgb": 1 / 3, "w_lgbm": 1 / 3})
-
-    before_metrics = evaluate_models(
-        y_true=y_test,
-        pipeline=old_pipeline,
-        selected_features=old_selected_features,
-        rf_model=old_rf_model,
-        xgb_model=old_xgb_model,
-        lgbm_model=old_lgbm_model,
-        weights=old_weights,
-        X_test_raw=X_test_raw,
+    # Load existing artifacts for before-metrics comparison.
+    # On a cold start (no prior joblib files), skip gracefully.
+    prior_artifacts_exist = all(
+        p.exists()
+        for p in [PIPELINE_PATH, RF_MODEL_PATH, XGB_MODEL_PATH, LGBM_MODEL_PATH, META_PATH]
     )
+
+    before_metrics: dict[str, float] = {"f1": float("nan"), "recall": float("nan")}
+
+    if prior_artifacts_exist:
+        old_pipeline = joblib.load(PIPELINE_PATH)
+        old_rf_model = joblib.load(RF_MODEL_PATH)
+        old_xgb_model = joblib.load(XGB_MODEL_PATH)
+        old_lgbm_model = joblib.load(LGBM_MODEL_PATH)
+        with open(META_PATH, "r", encoding="utf-8") as f:
+            old_meta = json.load(f)
+
+        old_selected_features = old_meta.get("selected_features", [])
+        old_weights = old_meta.get("weights", {"w_rf": 1 / 3, "w_xgb": 1 / 3, "w_lgbm": 1 / 3})
+
+        try:
+            before_metrics = evaluate_models(
+                y_true=y_test,
+                pipeline=old_pipeline,
+                selected_features=old_selected_features,
+                rf_model=old_rf_model,
+                xgb_model=old_xgb_model,
+                lgbm_model=old_lgbm_model,
+                weights=old_weights,
+                X_test_raw=X_test_raw,
+            )
+        except Exception as exc:
+            print(f"  WARNING: Could not compute before-metrics (pipeline mismatch?): {exc}")
+            before_metrics = {"f1": float("nan"), "recall": float("nan")}
+    else:
+        print("  No prior model artifacts found — cold start. Skipping before-metrics.")
 
     new_pipeline, selected_features = build_preprocessing_pipeline(X_train_raw, y_train)
     X_train_processed = transform_with_selected_features(new_pipeline, X_train_raw, selected_features)
@@ -454,25 +497,45 @@ def main() -> None:
     )
 
     uploaded_objects: list[str] = []
-    if args.bucket.strip():
-        uploaded_objects = upload_artifacts_to_bucket(
-            service_account_path=args.service_account,
-            bucket_name=args.bucket.strip(),
-            bucket_prefix=args.bucket_prefix,
+    if not args.bucket.strip():
+        print("\nNo --bucket argument provided. Skipping GCS upload.")
+        print(
+            "To upload, run with: --bucket bt4013team9-664f6.firebasestorage.app "
+            "--bucket-prefix ensemble"
         )
-
-    print("Retraining complete.")
-    print(f"Data source: {data_source}")
-    print(f"Rows used: {len(prepared_df)}")
-    print(f"Before ensemble F1/Recall: {before_metrics['f1']:.4f} / {before_metrics['recall']:.4f}")
-    print(f"After ensemble F1/Recall: {after_metrics['f1']:.4f} / {after_metrics['recall']:.4f}")
-    if uploaded_objects:
+    else:
         bucket_root = f"gs://{args.bucket.strip()}"
         if args.bucket_prefix.strip().strip("/"):
             bucket_root = f"{bucket_root}/{args.bucket_prefix.strip().strip('/')}"
-        print(f"Uploaded artifacts to {bucket_root}")
-        for blob_name in uploaded_objects:
-            print(f" - {blob_name}")
+        print(f"\nUploading artifacts to {bucket_root} ...")
+        try:
+            uploaded_objects = upload_artifacts_to_bucket(
+                service_account_path=args.service_account,
+                bucket_name=args.bucket.strip(),
+                bucket_prefix=args.bucket_prefix,
+            )
+            print(f"Upload complete. {len(uploaded_objects)} file(s) written:")
+            for blob_name in uploaded_objects:
+                print(f"  gs://{args.bucket.strip()}/{blob_name}")
+        except RuntimeError as exc:
+            print(f"\nERROR during GCS upload:\n{exc}")
+            print("Local joblib files have been saved. Fix the bucket issue and re-upload manually.")
+
+    # ── Final summary ──────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("RETRAINING COMPLETE")
+    print("=" * 60)
+    print(f"  Data source       : {data_source}")
+    print(f"  Firestore records : {firestore_count}")
+    print(f"  Rows used         : {len(prepared_df)}")
+    before_f1 = before_metrics['f1']
+    before_rec = before_metrics['recall']
+    after_f1 = after_metrics['f1']
+    after_rec = after_metrics['recall']
+    print(f"  Before  F1/Recall : {before_f1:.4f} / {before_rec:.4f}" if not (
+        before_f1 != before_f1) else "  Before  F1/Recall : N/A (cold start)")
+    print(f"  After   F1/Recall : {after_f1:.4f} / {after_rec:.4f}")
+    print(f"  GCS artifacts     : {len(uploaded_objects)} uploaded")
 
 
 if __name__ == "__main__":
