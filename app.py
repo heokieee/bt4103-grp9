@@ -217,15 +217,34 @@ def sync_artifacts_from_bucket() -> tuple[bool, str]:
     bucket = client.bucket(bucket_name)
 
     downloaded: list[str] = []
+    missing_in_bucket: list[str] = []
     for local_path in ARTIFACT_PATHS:
         blob_name = build_blob_name(bucket_prefix, local_path.name)
         blob = bucket.blob(blob_name)
         if not blob.exists(client):
-            return False, f"Missing artifact in bucket: gs://{bucket_name}/{blob_name}"
+            if local_path.exists():
+                missing_in_bucket.append(blob_name)
+                continue
+            return False, f"Missing artifact in bucket and local disk: gs://{bucket_name}/{blob_name}"
         blob.download_to_filename(str(local_path))
         downloaded.append(local_path.name)
 
-    return True, "Downloaded latest artifacts from bucket: " + ", ".join(downloaded)
+    if downloaded and missing_in_bucket:
+        return (
+            True,
+            "Downloaded available artifacts from bucket: "
+            + ", ".join(downloaded)
+            + " | Missing in bucket (using local fallback): "
+            + ", ".join(missing_in_bucket),
+        )
+
+    if downloaded:
+        return True, "Downloaded latest artifacts from bucket: " + ", ".join(downloaded)
+
+    if missing_in_bucket:
+        return True, "Bucket artifacts missing; using local artifacts for now."
+
+    return True, "No artifacts needed from bucket; using local artifacts."
 
 
 def to_binary_series(series: pd.Series) -> pd.Series:
