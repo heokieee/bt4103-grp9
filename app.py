@@ -413,6 +413,13 @@ def run_retraining_job() -> tuple[bool, str]:
 
     output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
 
+    # Mirror subprocess output to server logs for Streamlit Cloud debugging.
+    print("\n" + "=" * 30)
+    print("RETRAIN SUBPROCESS OUTPUT")
+    print("=" * 30)
+    print(output.strip() or "<empty>")
+    print("=" * 30 + "\n")
+
     if proc.returncode != 0:
         return False, output.strip() or "Retraining failed without logs."
 
@@ -638,7 +645,6 @@ with st.sidebar:
                 if ok:
                     st.success("Retraining completed and artifacts were refreshed.")
                     st.text_area("Retraining Output", value=logs, height=180)
-                    st.rerun()
                 else:
                     st.error("Retraining failed.")
                     st.text_area("Retraining Output", value=logs, height=220)
