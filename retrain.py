@@ -17,7 +17,20 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import f1_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+
+try:
+    import shap as _shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, PolynomialFeatures, StandardScaler
@@ -33,6 +46,9 @@ XGB_MODEL_PATH = BASE / "ensemble_xgb_model.joblib"
 LGBM_MODEL_PATH = BASE / "ensemble_lgbm_model.joblib"
 META_PATH = BASE / "ensemble_metadata.json"
 RETRAIN_LOG_PATH = BASE / "retrain_log.csv"
+METRICS_ALL_MODELS_PATH = BASE / "metrics_all_models.csv"
+CONFUSION_ALL_MODELS_PATH = BASE / "confusion_all_models.csv"
+FEATURE_IMPORTANCE_PATH = BASE / "ensemble_shap_feature_importance.csv"
 
 COLLECTION_NAME = "current_customers"
 TARGET_COL = "Churn"
@@ -153,6 +169,9 @@ def upload_artifacts_to_bucket(
         LGBM_MODEL_PATH,
         META_PATH,
         RETRAIN_LOG_PATH,
+        METRICS_ALL_MODELS_PATH,
+        CONFUSION_ALL_MODELS_PATH,
+        FEATURE_IMPORTANCE_PATH,
     ]
 
     uploaded_objects: list[str] = []
@@ -370,6 +389,116 @@ def append_retrain_log(row: dict[str, Any]) -> None:
     combined.to_csv(RETRAIN_LOG_PATH, index=False)
 
 
+def save_model_comparison_csvs(
+    y_test: pd.Series,
+    rf_model,
+    xgb_model,
+    lgbm_model,
+    weights: dict[str, float],
+    X_test_processed: pd.DataFrame,
+) -> None:
+    models = {
+        "RandomForest": rf_model,
+        "XGBoost": xgb_model,
+        "LightGBM": lgbm_model,
+    }
+
+    metrics_rows: list[dict[str, Any]] = []
+    confusion_rows: list[dict[str, Any]] = []
+
+    for name, model in models.items():
+        y_pred = model.predict(X_test_processed)
+        y_proba = model.predict_proba(X_test_processed)[:, 1]
+        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+        metrics_rows.append({
+            "Model": name,
+            "Accuracy": float(accuracy_score(y_test, y_pred)),
+            "Precision": float(precision_score(y_test, y_pred, zero_division=0)),
+            "Recall": float(recall_score(y_test, y_pred, zero_division=0)),
+            "F1": float(f1_score(y_test, y_pred, zero_division=0)),
+            "ROC_AUC": float(roc_auc_score(y_test, y_proba)),
+        })
+        confusion_rows.append({"Model": name, "TN": int(tn), "FP": int(fp), "FN": int(fn), "TP": int(tp)})
+
+    rf_proba = rf_model.predict_proba(X_test_processed)[:, 1]
+    xgb_proba = xgb_model.predict_proba(X_test_processed)[:, 1]
+    lgbm_proba = lgbm_model.predict_proba(X_test_processed)[:, 1]
+    ensemble_proba = (
+        weights["w_rf"] * rf_proba
+        + weights["w_xgb"] * xgb_proba
+        + weights["w_lgbm"] * lgbm_proba
+    )
+    ensemble_pred = (ensemble_proba >= 0.5).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_test, ensemble_pred).ravel()
+    metrics_rows.append({
+        "Model": "Ensemble",
+        "Accuracy": float(accuracy_score(y_test, ensemble_pred)),
+        "Precision": float(precision_score(y_test, ensemble_pred, zero_division=0)),
+        "Recall": float(recall_score(y_test, ensemble_pred, zero_division=0)),
+        "F1": float(f1_score(y_test, ensemble_pred, zero_division=0)),
+        "ROC_AUC": float(roc_auc_score(y_test, ensemble_proba)),
+    })
+    confusion_rows.append({"Model": "Ensemble", "TN": int(tn), "FP": int(fp), "FN": int(fn), "TP": int(tp)})
+
+    pd.DataFrame(metrics_rows).to_csv(METRICS_ALL_MODELS_PATH, index=False)
+    pd.DataFrame(confusion_rows).to_csv(CONFUSION_ALL_MODELS_PATH, index=False)
+    print(f"  Saved {METRICS_ALL_MODELS_PATH.name} and {CONFUSION_ALL_MODELS_PATH.name}")
+
+
+def save_shap_feature_importance(
+    rf_model,
+    xgb_model,
+    lgbm_model,
+    weights: dict[str, float],
+    X_test_processed: pd.DataFrame,
+) -> None:
+    if not SHAP_AVAILABLE:
+        print("  WARNING: shap not installed — skipping SHAP feature importance export.")
+        return
+
+    feature_names = list(X_test_processed.columns)
+    sample = X_test_processed.iloc[:min(200, len(X_test_processed))]
+
+    try:
+        rf_explainer = _shap.TreeExplainer(rf_model)
+        xgb_explainer = _shap.TreeExplainer(xgb_model)
+        lgbm_explainer = _shap.TreeExplainer(lgbm_model)
+
+        rf_shap = rf_explainer.shap_values(sample)
+        xgb_shap = xgb_explainer.shap_values(sample)
+        lgbm_shap = lgbm_explainer.shap_values(sample)
+
+        # For binary classifiers, shap_values may return a list [neg_class, pos_class].
+        # Take the positive class values (index 1) when that happens.
+        if isinstance(rf_shap, list):
+            rf_shap = rf_shap[1]
+        if isinstance(xgb_shap, list):
+            xgb_shap = xgb_shap[1]
+        if isinstance(lgbm_shap, list):
+            lgbm_shap = lgbm_shap[1]
+
+        import numpy as np
+        rf_imp = np.abs(rf_shap).mean(axis=0)
+        xgb_imp = np.abs(xgb_shap).mean(axis=0)
+        lgbm_imp = np.abs(lgbm_shap).mean(axis=0)
+
+        ensemble_imp = (
+            weights["w_rf"] * rf_imp
+            + weights["w_xgb"] * xgb_imp
+            + weights["w_lgbm"] * lgbm_imp
+        )
+
+        pd.DataFrame({
+            "feature": feature_names,
+            "ensemble_shap_importance": ensemble_imp,
+        }).sort_values("ensemble_shap_importance", ascending=False).to_csv(
+            FEATURE_IMPORTANCE_PATH, index=False
+        )
+        print(f"  Saved {FEATURE_IMPORTANCE_PATH.name}")
+    except Exception as exc:
+        print(f"  WARNING: SHAP computation failed: {exc}")
+
+
 def main() -> None:
     args = parse_args()
 
@@ -510,6 +639,23 @@ def main() -> None:
 
     with open(META_PATH, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
+
+    save_model_comparison_csvs(
+        y_test=y_test,
+        rf_model=rf_model,
+        xgb_model=xgb_model,
+        lgbm_model=lgbm_model,
+        weights=new_weights,
+        X_test_processed=X_test_processed,
+    )
+
+    save_shap_feature_importance(
+        rf_model=rf_model,
+        xgb_model=xgb_model,
+        lgbm_model=lgbm_model,
+        weights=new_weights,
+        X_test_processed=X_test_processed,
+    )
 
     append_retrain_log(
         {

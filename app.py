@@ -748,7 +748,7 @@ with st.sidebar:
                 st.markdown("**{}:** {}".format(name, "Available" if ok else "Missing"))
 
         st.markdown("---")
-        with st.expander(" Model Retraining", expanded=True):
+        with st.expander("Model Retraining", expanded=True):
 
             # ── 1. Last retrained timestamp ───────────────────────────────
             last_retrained_dt = get_last_retrained_at_from_metadata()
@@ -773,13 +773,13 @@ with st.sidebar:
             if firestore_record_count is not None:
                 if firestore_record_count >= 200:
                     st.success(
-                        f" {firestore_record_count} records in Firestore — "
-                        "retrain will use **live data**."
+                        f"{firestore_record_count} records in Firestore — "
+                        "retrain will use live data."
                     )
                 else:
                     st.info(
-                        f" Only {firestore_record_count} records in Firestore (minimum 200 "
-                        "recommended). Retrain will **fall back to the original CSV**."
+                        f"Only {firestore_record_count} records in Firestore (minimum 200 "
+                        "recommended). Retrain will fall back to the original CSV."
                     )
 
             # ── 4. Last run metrics from retrain_log.csv ──────────────────
