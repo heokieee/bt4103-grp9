@@ -171,6 +171,15 @@ def safe_read_csv(path: Path) -> Optional[pd.DataFrame]:
 def get_model_bucket_config() -> tuple[str, str]:
     bucket_name = str(st.secrets.get("model_bucket_name", "")).strip()
     bucket_prefix = str(st.secrets.get("model_bucket_prefix", "ensemble")).strip()
+
+    # Fallback for TOML layouts where bucket keys were accidentally nested
+    # under [gcp_service_account] in Streamlit secrets.
+    if not bucket_name:
+        service_account = st.secrets.get("gcp_service_account", None)
+        if service_account is not None:
+            bucket_name = str(service_account.get("model_bucket_name", "")).strip()
+            bucket_prefix = str(service_account.get("model_bucket_prefix", bucket_prefix)).strip()
+
     return bucket_name, bucket_prefix
 
 
@@ -401,6 +410,11 @@ def run_retraining_job() -> tuple[bool, str]:
         return False, f"Retraining script not found: {retrain_script}"
 
     bucket_name, bucket_prefix = get_model_bucket_config()
+    print(
+        "Retrain bucket config:",
+        f"bucket_name={'<empty>' if not bucket_name else bucket_name}",
+        f"bucket_prefix={bucket_prefix}",
+    )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=True) as temp_sa:
         json.dump(service_account, temp_sa)
