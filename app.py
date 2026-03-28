@@ -29,7 +29,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from drift_monitor import run_drift_monitor
 from frontend_core import (
     CURRENT_COLLECTION as INTAKE_CURRENT_COLLECTION,
     SOURCE_VALUE as INTAKE_SOURCE_VALUE,
@@ -132,9 +131,9 @@ METRICS_ALL_MODELS_PATH = BASE / "metrics_all_models.csv"
 CONFUSION_ALL_MODELS_PATH = BASE / "confusion_all_models.csv"
 FEATURE_IMPORTANCE_PATH = BASE / "ensemble_shap_feature_importance.csv"
 REFERENCE_DATASET_PATH = BASE / "E Commerce Dataset.csv"
-DRIFT_REPORT_PATH = BASE / "drift_report.csv"
 
 CURRENT_COLLECTION = "current_customers"
+FIRESTORE_FETCH_LIMIT = 50  # max records fetched for scoring; increase if needed
 
 DEFAULT_ID_CANDIDATES = [
     "CustomerID",
@@ -242,40 +241,11 @@ def get_last_retrained_at_from_metadata() -> Optional[datetime]:
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def get_retrain_readiness(threshold: int) -> dict[str, object]:
+def get_firestore_record_count(collection_name: str = CURRENT_COLLECTION) -> int:
     db = get_firestore_client()
-    last_retrained_at = get_last_retrained_at_from_metadata()
+    docs = list(db.collection(collection_name).select([]).stream())
+    return len(docs)
 
-    total_client_rows = 0
-    new_client_rows = 0
-
-    for doc in db.collection(CURRENT_COLLECTION).stream():
-        row = doc.to_dict() or {}
-        if row.get("source") != INTAKE_SOURCE_VALUE:
-            continue
-
-        total_client_rows += 1
-        created_at = parse_iso_datetime(row.get("created_at_utc"))
-
-        # If we never retrained before, use total client-added rows as the gate.
-        if last_retrained_at is None:
-            new_client_rows += 1
-            continue
-
-        if created_at is not None and created_at > last_retrained_at:
-            new_client_rows += 1
-
-    ready = new_client_rows >= threshold
-
-    return {
-        "ready": ready,
-        "threshold": threshold,
-        "new_client_rows": new_client_rows,
-        "total_client_rows": total_client_rows,
-        "last_retrained_at": (
-            last_retrained_at.isoformat() if last_retrained_at is not None else None
-        ),
-    }
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -424,7 +394,7 @@ def fetch_firestore_customers(collection_name: str = CURRENT_COLLECTION) -> pd.D
     for attempt, delay in enumerate(retry_delays, start=1):
         try:
             print(f"FIRESTORE FETCH at {time.strftime('%H:%M:%S')}")
-            docs = db.collection(collection_name).limit(50).stream()
+            docs = db.collection(collection_name).limit(FIRESTORE_FETCH_LIMIT).stream()
             rows = []
             for doc in docs:
                 row = doc.to_dict()
@@ -557,7 +527,7 @@ def run_retraining_job() -> tuple[bool, str]:
     sync_artifacts_from_bucket.clear()
     load_artifacts.clear()
     fetch_firestore_customers.clear()
-    get_retrain_readiness.clear()
+    get_firestore_record_count.clear()
     return True, output.strip() or "Retraining completed."
 
 
@@ -778,12 +748,10 @@ with st.sidebar:
                 last_retrained_label = "Never"
             st.metric("Last Retrained", last_retrained_label)
 
-            # ── 2. Firestore record count (IDs only, minimal read cost) ───
+            # ── 2. Firestore record count (cached 120s, ID-only reads) ────
             firestore_record_count: Optional[int] = None
             try:
-                db = get_firestore_client()
-                docs = list(db.collection("current_customers").select([]).stream())
-                firestore_record_count = len(docs)
+                firestore_record_count = get_firestore_record_count(CURRENT_COLLECTION)
                 st.metric("Firestore Records Available", firestore_record_count)
             except Exception as ex:
                 st.warning("Could not fetch Firestore record count.")
@@ -1035,27 +1003,15 @@ else:
 
 st.markdown("---")
 
-drift_report_df = None
-drift_error = None
-try:
-    drift_report_df = run_drift_monitor(
-        reference_csv_path=REFERENCE_DATASET_PATH,
-        current_df=df,
-        output_path=DRIFT_REPORT_PATH,
-    )
-except Exception as ex:
-    drift_error = str(ex)
-
 # =========================
 # TABS
 # =========================
-tab_model, tab_drivers, tab_segments, tab_lookup, tab_data, tab_drift = st.tabs([
+tab_model, tab_drivers, tab_segments, tab_lookup, tab_data = st.tabs([
     "Model Performance",
     "Top Churn Drivers",
     "Risk Segmentation",
     "Customer Lookup",
     "Scored Data",
-    "Data Drift",
 ])
 
 # =========================
@@ -1503,62 +1459,3 @@ with tab_data:
     )
     st.plotly_chart(fig_hist, use_container_width=True)
 
-# =========================
-# TAB 6: DATA DRIFT
-# =========================
-with tab_drift:
-    st.markdown("### Data Drift")
-
-    if drift_error is not None:
-        st.error("Unable to compute drift report.")
-        st.code(drift_error)
-    elif drift_report_df is None or drift_report_df.empty:
-        st.info("No drift output available.")
-    else:
-        drift_count = int((drift_report_df["status"] == "Drift").sum())
-
-        if drift_count > 0:
-            st.error(f"{drift_count} features showing drift - consider retraining")
-        else:
-            st.success("No features currently flagged as Drift.")
-
-        def style_status_row(row: pd.Series) -> list[str]:
-            colour_map = {
-                "OK": "#e8f5e9",
-                "Warning": "#fff8e1",
-                "Drift": "#ffebee",
-            }
-            bg = colour_map.get(str(row.get("status", "")), "#ffffff")
-            return [f"background-color: {bg}" for _ in row]
-
-        st.dataframe(
-            drift_report_df.style.apply(style_status_row, axis=1),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        psi_df = drift_report_df[drift_report_df["type"] == "numeric"].copy()
-        psi_df["statistic"] = pd.to_numeric(psi_df["statistic"], errors="coerce")
-        psi_df = psi_df.dropna(subset=["statistic"])
-
-        if not psi_df.empty:
-            fig_psi = go.Figure(
-                go.Bar(
-                    x=psi_df["feature"],
-                    y=psi_df["statistic"],
-                    marker_color="#4c78a8",
-                    name="PSI",
-                )
-            )
-            fig_psi.add_hline(y=0.1, line_dash="dash", line_color="#f39c12", annotation_text="Warning 0.1")
-            fig_psi.add_hline(y=0.2, line_dash="dash", line_color="#e74c3c", annotation_text="Drift 0.2")
-            fig_psi.update_layout(
-                title="PSI by Numerical Feature",
-                xaxis_title="Feature",
-                yaxis_title="PSI",
-                height=420,
-                template=PLOTLY_TEMPLATE,
-            )
-            st.plotly_chart(fig_psi, use_container_width=True)
-        else:
-            st.info("No numerical PSI values available to plot.")

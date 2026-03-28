@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 from firebase_admin import credentials, firestore, initialize_app
 from google.cloud import storage
@@ -477,7 +478,6 @@ def save_shap_feature_importance(
         if isinstance(lgbm_shap, list):
             lgbm_shap = lgbm_shap[1]
 
-        import numpy as np
         rf_imp = np.abs(rf_shap).mean(axis=0)
         xgb_imp = np.abs(xgb_shap).mean(axis=0)
         lgbm_imp = np.abs(lgbm_shap).mean(axis=0)
