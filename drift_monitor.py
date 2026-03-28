@@ -173,7 +173,7 @@ def build_drift_report(
                     "feature": feature,
                     "type": "categorical",
                     "statistic": float("nan"),
-                    "threshold": "p < 0.05 Warning",
+                    "threshold": "p < 0.05 Drift",
                     "status": "Warning",
                 }
             )
@@ -184,7 +184,7 @@ def build_drift_report(
         if np.isnan(p_value):
             status = "Warning"
         elif p_value < 0.05:
-            status = "Warning"
+            status = "Drift"
         else:
             status = "OK"
 
@@ -193,7 +193,7 @@ def build_drift_report(
                 "feature": feature,
                 "type": "categorical",
                 "statistic": p_value,
-                "threshold": "p < 0.05 Warning",
+                "threshold": "p < 0.05 Drift",
                 "status": status,
             }
         )
