@@ -6,23 +6,23 @@
   "raw_input_columns": [
     "CustomerID",
     "Tenure",
-    "PreferredLoginDevice",
     "CityTier",
     "WarehouseToHome",
-    "PreferredPaymentMode",
-    "Gender",
     "HourSpendOnApp",
     "NumberOfDeviceRegistered",
-    "PreferedOrderCat",
     "SatisfactionScore",
-    "MaritalStatus",
     "NumberOfAddress",
     "Complain",
     "OrderAmountHikeFromlastYear",
     "CouponUsed",
     "OrderCount",
     "DaySinceLastOrder",
-    "CashbackAmount"
+    "CashbackAmount",
+    "PreferredLoginDevice",
+    "PreferredPaymentMode",
+    "Gender",
+    "PreferedOrderCat",
+    "MaritalStatus"
   ],
   "selected_features": [
     "num__Tenure",
@@ -45,7 +45,6 @@
     "num__CityTier WarehouseToHome",
     "num__CityTier NumberOfDeviceRegistered",
     "num__CityTier SatisfactionScore",
-    "num__CityTier NumberOfAddress",
     "num__CityTier Complain",
     "num__WarehouseToHome NumberOfDeviceRegistered",
     "num__WarehouseToHome SatisfactionScore",
@@ -70,6 +69,7 @@
     "num__OrderAmountHikeFromlastYear CashbackAmount",
     "num__DaySinceLastOrder CashbackAmount",
     "cat__PreferredLoginDevice_Mobile Phone",
+    "cat__PreferedOrderCat_Grocery",
     "cat__PreferedOrderCat_Laptop & Accessory",
     "cat__PreferedOrderCat_Mobile",
     "cat__PreferedOrderCat_Mobile Phone",
@@ -77,8 +77,9 @@
     "cat__MaritalStatus_Single"
   ],
   "weights": {
-    "w_rf": 0.32894736842105265,
-    "w_xgb": 0.3383458646616541,
-    "w_lgbm": 0.3327067669172933
-  }
+    "w_rf": 0.333969465648855,
+    "w_xgb": 0.333969465648855,
+    "w_lgbm": 0.3320610687022901
+  },
+  "retrained_at": "2026-03-28T08:22:31.436632+00:00"
 }

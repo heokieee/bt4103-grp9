@@ -1,0 +1,5 @@
+Model,TN,FP,FN,TP
+RandomForest,928,9,15,175
+XGBoost,931,6,15,175
+LightGBM,931,6,16,174
+Ensemble,932,5,15,175
