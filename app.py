@@ -77,38 +77,126 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
+    /* ── Metric cards ── */
     div[data-testid="stMetric"] {
-        background: linear-gradient(135deg, #667eea11, #764ba211);
-        border: 1px solid #e0e0e0;
-        border-radius: 12px;
-        padding: 16px 20px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 18px 22px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        transition: box-shadow 0.2s;
+    }
+    div[data-testid="stMetric"]:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.10);
     }
     div[data-testid="stMetric"] label {
-        font-size: 0.82rem !important;
-        color: #555 !important;
+        font-size: 0.78rem !important;
+        color: #6b7280 !important;
         font-weight: 600 !important;
         text-transform: uppercase;
-        letter-spacing: 0.03em;
+        letter-spacing: 0.06em;
     }
     div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-        font-size: 1.6rem !important;
+        font-size: 1.75rem !important;
         font-weight: 700 !important;
+        color: #111827 !important;
     }
+
+    /* ── Tabs ── */
     button[data-baseweb="tab"] {
-        font-size: 0.95rem !important;
+        font-size: 0.92rem !important;
         font-weight: 600 !important;
-        padding: 10px 24px !important;
+        padding: 10px 20px !important;
+        color: #6b7280 !important;
     }
-    .stDataFrame {
-        border-radius: 8px;
-        overflow: hidden;
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #1d4ed8 !important;
+        border-bottom: 3px solid #1d4ed8 !important;
+    }
+
+    /* ── Sidebar ── */
+    section[data-testid="stSidebar"] {
+        background: #f9fafb;
+        border-right: 1px solid #e5e7eb;
     }
     section[data-testid="stSidebar"] > div {
-        padding-top: 1.5rem;
+        padding-top: 1.2rem;
     }
+    .sidebar-section-label {
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #9ca3af;
+        padding: 4px 0 6px 0;
+        margin-top: 8px;
+    }
+
+    /* ── Buttons ── */
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: background 0.15s, box-shadow 0.15s;
+    }
+    .stButton > button:hover {
+        box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    }
+
+    /* ── DataFrames ── */
+    .stDataFrame {
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid #e5e7eb;
+    }
+
+    /* ── Expanders ── */
+    details {
+        border: 1px solid #e5e7eb !important;
+        border-radius: 10px !important;
+        background: #ffffff;
+    }
+
+    /* ── Dividers ── */
     hr {
-        border-color: #e8e8e8 !important;
+        border-color: #f3f4f6 !important;
+        margin: 0.8rem 0 !important;
+    }
+
+    /* ── Hero banner ── */
+    .hero-banner {
+        background: linear-gradient(135deg, #1e3a8a 0%, #1d4ed8 50%, #3b82f6 100%);
+        border-radius: 16px;
+        padding: 1.5rem 2rem;
+        margin-bottom: 1.5rem;
+        color: white;
+    }
+    .hero-banner h1 {
+        margin: 0 0 0.25rem 0;
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: white !important;
+    }
+    .hero-banner p {
+        margin: 0;
+        font-size: 0.95rem;
+        color: rgba(255,255,255,0.8);
+    }
+
+    /* ── Section headings ── */
+    .section-heading {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #111827;
+        margin: 1.2rem 0 0.6rem 0;
+        padding-bottom: 6px;
+        border-bottom: 2px solid #e5e7eb;
     }
     </style>
     """,
@@ -602,9 +690,6 @@ INTAKE_SECTION_GROUPS: list[tuple[str, list[str]]] = [
         "SatisfactionScore",
         "Complain",
     ]),
-    ("Churn Label", [
-        "Churn",
-    ]),
 ]
 
 
@@ -658,7 +743,7 @@ def render_intake_field(col: str, schema: dict[str, object], payload: dict[str, 
 
 
 def build_intake_form(schema: dict[str, object], next_customer_id: int) -> dict[str, object]:
-    payload: dict[str, object] = {"CustomerID": next_customer_id}
+    payload: dict[str, object] = {"CustomerID": next_customer_id, INTAKE_TARGET_COL: None}
 
     st.info(f"Customer ID will be automatically assigned: **{next_customer_id}**")
 
@@ -676,8 +761,15 @@ def build_intake_form(schema: dict[str, object], next_customer_id: int) -> dict[
 
 
 def render_intake_mode() -> None:
-    st.markdown("# New Customer Intake")
-    st.caption("Fill in the customer details below. All fields are required unless marked optional.")
+    st.markdown(
+        """
+        <div class="hero-banner">
+            <h1>New Customer Intake</h1>
+            <p>Fill in the customer details below. All fields are required unless marked optional.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if not REFERENCE_DATASET_PATH.exists():
         st.error(f"Reference dataset not found: {REFERENCE_DATASET_PATH}")
@@ -716,6 +808,7 @@ def render_intake_mode() -> None:
             st.write(f"- {err}")
     else:
         st.success("Customer submitted successfully. They will appear on the dashboard after the next data refresh.")
+        st.info("Churn prediction for this customer will be available within approximately 5 minutes once the dashboard cache refreshes.")
 
     try:
         submission_id, promoted_id = intake_write_to_firestore(
@@ -742,52 +835,62 @@ def render_intake_mode() -> None:
 # =========================
 # HEADER
 # =========================
-st.markdown("# E-Commerce Customer Intelligence App")
+st.markdown(
+    """
+    <div class="hero-banner">
+        <h1>E-Commerce Customer Intelligence</h1>
+        <p>Predict customer churn, identify at-risk segments, and take action before customers leave.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
-    st.markdown("## App Mode")
+    st.markdown('<div class="sidebar-section-label">Navigation</div>', unsafe_allow_html=True)
     app_mode = st.radio(
         "Select Experience",
         options=["Dashboard", "New Customer Intake"],
         index=0,
         key="app_mode",
+        label_visibility="collapsed",
     )
 
     st.markdown("---")
 
     data_source = "Firestore Live Data"
-    threshold = 0.50
+    threshold = 50
     uploaded = None
 
     if app_mode == "Dashboard":
-        st.markdown("## Dashboard Controls")
-        st.markdown("---")
-
+        st.markdown('<div class="sidebar-section-label">Data Source</div>', unsafe_allow_html=True)
         data_source = st.radio(
             "Data Source",
             options=["Firestore Live Data", "Upload CSV"],
             index=0,
+            label_visibility="collapsed",
         )
 
-        threshold = st.slider(
-            "Churn Probability Threshold",
-            min_value=0.05,
-            max_value=0.95,
-            value=0.50,
-            step=0.01,
-            help="Customers above this probability are classified as likely churners.",
-        )
-
-        st.markdown("---")
         if data_source == "Upload CSV":
             uploaded = st.file_uploader(
                 "Upload Customer CSV",
                 type=["csv"],
-                help="Upload a CSV with the same raw columns used in ensemble.ipynb.",
+                help="Upload a CSV with the same columns as the training dataset.",
             )
+
+        st.markdown("---")
+        st.markdown('<div class="sidebar-section-label">Classification Threshold</div>', unsafe_allow_html=True)
+        threshold = st.slider(
+            "Churn Probability Threshold (%)",
+            min_value=5,
+            max_value=95,
+            value=50,
+            step=1,
+            help="Customers above this probability are flagged as likely to churn. Lower = more sensitive.",
+        )
+        st.caption("Currently classifying customers above **{}%** as churners.".format(threshold))
 
         st.markdown("---")
         with st.expander("Artifact Status", expanded=False):
@@ -995,7 +1098,7 @@ try:
         w_xgb,
         w_lgbm,
     )
-    pred = (proba >= threshold).astype(int)
+    pred = (proba >= threshold / 100).astype(int)
 except Exception as e:
     st.error("Prediction failed.")
     st.exception(e)
@@ -1010,19 +1113,21 @@ out["Risk_Tier"] = risk_tier_from_proba(proba).astype(str)
 # FILTERS
 # =========================
 st.markdown("---")
-with st.expander("Filters — Narrow by demographics and behaviour", expanded=False):
-    filter_cols = [
-        "Gender",
-        "MaritalStatus",
-        "PreferredLoginDevice",
-        "PreferedOrderCat",
-        "PreferredPaymentMode",
-        "CityTier",
-    ]
+FILTER_LABELS = {
+    "Gender": "Gender",
+    "MaritalStatus": "Marital Status",
+    "PreferredLoginDevice": "Login Device",
+    "PreferedOrderCat": "Order Category",
+    "PreferredPaymentMode": "Payment Method",
+    "CityTier": "City Tier",
+}
+
+with st.expander("Filters — Narrow by customer segment", expanded=False):
+    filter_cols = list(FILTER_LABELS.keys())
     available_filters = [c for c in filter_cols if c in out.columns]
 
     if not available_filters:
-        st.caption("No standard filter columns found in this dataset.")
+        st.caption("No filter columns found in this dataset.")
         filtered = out.copy()
     else:
         cols = st.columns(min(3, len(available_filters)))
@@ -1031,7 +1136,7 @@ with st.expander("Filters — Narrow by demographics and behaviour", expanded=Fa
         for i, c in enumerate(available_filters):
             with cols[i % len(cols)]:
                 opts = sorted([x for x in out[c].dropna().unique().tolist()])
-                sel = st.multiselect(c, options=opts, default=opts)
+                sel = st.multiselect(FILTER_LABELS.get(c, c), options=opts, default=opts)
                 selected[c] = set(sel)
 
         mask = np.ones(len(out), dtype=bool)
@@ -1040,12 +1145,12 @@ with st.expander("Filters — Narrow by demographics and behaviour", expanded=Fa
 
         filtered = out.loc[mask].copy()
 
-    st.info("Showing {:,} of {:,} customers after filters.".format(len(filtered), len(out)))
+    st.caption("Showing {:,} of {:,} customers after filters.".format(len(filtered), len(out)))
 
 # =========================
 # KPI CARDS
 # =========================
-st.markdown("### Key Metrics")
+st.markdown('<div class="section-heading">Key Metrics</div>', unsafe_allow_html=True)
 k1, k2, k3, k4 = st.columns(4)
 
 if has_target and target_col in filtered.columns:
@@ -1065,8 +1170,10 @@ if has_target and target_col in filtered.columns:
     k3.metric("Model Accuracy", "{:.3f}".format(acc_f))
     k4.metric("Recall", "{:.3f}".format(rec_f))
 else:
-    k3.metric("Weight RF", "{:.3f}".format(w_rf))
-    k4.metric("Weight XGB / LGBM", "{:.3f} / {:.3f}".format(w_xgb, w_lgbm))
+    avg_prob = float(filtered["Churn_probability"].mean())
+    high_risk = int((filtered["Risk_Tier"] == "High").sum()) + int((filtered["Risk_Tier"] == "Critical").sum())
+    k3.metric("Avg Churn Probability", "{:.1f}%".format(avg_prob * 100))
+    k4.metric("High / Critical Risk", "{:,}".format(high_risk))
 
 st.markdown("---")
 
@@ -1075,10 +1182,10 @@ st.markdown("---")
 # =========================
 tab_model, tab_drivers, tab_segments, tab_lookup, tab_data = st.tabs([
     "Model Performance",
-    "Top Churn Drivers",
-    "Risk Segmentation",
+    "Churn Drivers",
+    "Risk Segments",
     "Customer Lookup",
-    "Scored Data",
+    "All Customers",
 ])
 
 # =========================
@@ -1363,7 +1470,7 @@ with tab_lookup:
         if not ids_view:
             st.info("No matching customer found.")
         else:
-            chosen_id = st.selectbox("Select Customer", ids_view[:5000])
+            chosen_id = st.selectbox("Select Customer", ids_view)
             row = filtered.loc[filtered[id_col].astype(str) == str(chosen_id)].iloc[0]
 
             prob = float(row["Churn_probability"])
@@ -1371,7 +1478,6 @@ with tab_lookup:
             pred_label = int(row["Churn_pred"])
 
             st.markdown("---")
-            h1, h2, h3 = st.columns(3)
 
             prob_colour = (
                 "#2ecc71" if prob < 0.25
@@ -1380,41 +1486,55 @@ with tab_lookup:
                 else "#8e44ad"
             )
 
-            h1.markdown(
-                """
-                <div style="text-align:center; padding:20px; border-radius:12px; background:{0}15; border:2px solid {0};">
-                    <div style="font-size:0.85rem; color:#666; font-weight:600;">CHURN PROBABILITY</div>
-                    <div style="font-size:2.2rem; font-weight:700; color:{0};">{1:.1%}</div>
-                </div>
-                """.format(prob_colour, prob),
-                unsafe_allow_html=True,
-            )
+            # Gauge meter — main visual centrepiece
+            gauge_col, summary_col = st.columns([2, 1])
+            with gauge_col:
+                fig_gauge = go.Figure(
+                    go.Indicator(
+                        mode="gauge+number",
+                        value=prob * 100,
+                        title={"text": "Churn Risk Score", "font": {"size": 18}},
+                        number={"suffix": "%", "font": {"size": 48}},
+                        gauge=dict(
+                            axis=dict(range=[0, 100]),
+                            bar=dict(color=prob_colour),
+                            steps=[
+                                dict(range=[0, 25], color="rgba(46, 204, 113, 0.2)"),
+                                dict(range=[25, 50], color="rgba(243, 156, 18, 0.2)"),
+                                dict(range=[50, 75], color="rgba(231, 76, 60, 0.2)"),
+                                dict(range=[75, 100], color="rgba(142, 68, 173, 0.2)"),
+                            ],
+                            threshold=dict(
+                                line=dict(color="black", width=3),
+                                thickness=0.8,
+                                value=threshold,
+                            ),
+                        ),
+                    )
+                )
+                fig_gauge.update_layout(height=320, template=PLOTLY_TEMPLATE)
+                st.plotly_chart(fig_gauge, use_container_width=True)
 
-            tier_colour = RISK_COLOURS.get(tier, "#999")
-            h2.markdown(
-                """
-                <div style="text-align:center; padding:20px; border-radius:12px; background:{0}15; border:2px solid {0};">
-                    <div style="font-size:0.85rem; color:#666; font-weight:600;">RISK TIER</div>
-                    <div style="font-size:2.2rem; font-weight:700; color:{0};">{1}</div>
-                </div>
-                """.format(tier_colour, tier),
-                unsafe_allow_html=True,
-            )
-
-            pred_colour = "#e74c3c" if pred_label == 1 else "#2ecc71"
-            pred_text = "Will Churn" if pred_label == 1 else "Will Stay"
-            h3.markdown(
-                """
-                <div style="text-align:center; padding:20px; border-radius:12px; background:{0}15; border:2px solid {0};">
-                    <div style="font-size:0.85rem; color:#666; font-weight:600;">PREDICTION</div>
-                    <div style="font-size:2.2rem; font-weight:700; color:{0};">{1}</div>
-                </div>
-                """.format(pred_colour, pred_text),
-                unsafe_allow_html=True,
-            )
+            with summary_col:
+                st.markdown("<br><br>", unsafe_allow_html=True)
+                tier_colour = RISK_COLOURS.get(tier, "#999")
+                pred_colour = "#e74c3c" if pred_label == 1 else "#2ecc71"
+                pred_text = "Will Churn" if pred_label == 1 else "Will Stay"
+                st.markdown(
+                    """
+                    <div style="text-align:center; padding:16px; border-radius:12px; background:{0}15; border:2px solid {0}; margin-bottom:12px;">
+                        <div style="font-size:0.8rem; color:#666; font-weight:600;">RISK TIER</div>
+                        <div style="font-size:1.8rem; font-weight:700; color:{0};">{1}</div>
+                    </div>
+                    <div style="text-align:center; padding:16px; border-radius:12px; background:{2}15; border:2px solid {2};">
+                        <div style="font-size:0.8rem; color:#666; font-weight:600;">PREDICTION</div>
+                        <div style="font-size:1.8rem; font-weight:700; color:{2};">{3}</div>
+                    </div>
+                    """.format(tier_colour, tier, pred_colour, pred_text),
+                    unsafe_allow_html=True,
+                )
 
             st.markdown("")
-
             col_snap, col_action = st.columns([3, 2])
 
             with col_snap:
@@ -1451,33 +1571,6 @@ with tab_lookup:
                 for rec in simple_action_recommendations(row):
                     st.markdown("- {}".format(rec))
 
-            st.markdown("---")
-            fig_gauge = go.Figure(
-                go.Indicator(
-                    mode="gauge+number",
-                    value=prob * 100,
-                    title={"text": "Churn Risk Score", "font": {"size": 16}},
-                    number={"suffix": "%"},
-                    gauge=dict(
-                        axis=dict(range=[0, 100]),
-                        bar=dict(color=prob_colour),
-                        steps=[
-                            dict(range=[0, 25], color="rgba(46, 204, 113, 0.2)"),
-                            dict(range=[25, 50], color="rgba(243, 156, 18, 0.2)"),
-                            dict(range=[50, 75], color="rgba(231, 76, 60, 0.2)"),
-                            dict(range=[75, 100], color="rgba(142, 68, 173, 0.2)"),
-                        ],
-                        threshold=dict(
-                            line=dict(color="black", width=3),
-                            thickness=0.8,
-                            value=threshold * 100,
-                        ),
-                    ),
-                )
-            )
-            fig_gauge.update_layout(height=280, template=PLOTLY_TEMPLATE)
-            st.plotly_chart(fig_gauge, use_container_width=True)
-
 # =========================
 # TAB 5: SCORED DATA
 # =========================
@@ -1513,10 +1606,10 @@ with tab_data:
         labels={"Churn_probability": "Churn Probability"},
     )
     fig_hist.add_vline(
-        x=threshold,
+        x=threshold / 100,
         line_dash="dash",
         line_color="red",
-        annotation_text="Threshold ({})".format(threshold),
+        annotation_text="Threshold ({}%)".format(threshold),
     )
     fig_hist.update_layout(
         title="Distribution of Predicted Churn Probabilities",
