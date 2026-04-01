@@ -70,6 +70,85 @@ SOURCE_VALUE = "client_submission"
 SUBMISSIONS_COLLECTION = "customer_submissions"
 CURRENT_COLLECTION = "current_customers"
 
+# Human-readable labels for each column
+FIELD_LABELS: dict[str, str] = {
+    "Tenure":                     "Tenure (months with platform)",
+    "PreferredLoginDevice":       "Preferred Login Device",
+    "CityTier":                   "City Tier (1 = Metro, 3 = Small city)",
+    "WarehouseToHome":            "Warehouse to Home Distance (km)",
+    "PreferredPaymentMode":       "Preferred Payment Method",
+    "Gender":                     "Gender",
+    "HourSpendOnApp":             "Hours Spent on App (per day)",
+    "NumberOfDeviceRegistered":   "Number of Devices Registered",
+    "PreferedOrderCat":           "Preferred Order Category",
+    "SatisfactionScore":          "Satisfaction Score (1-5)",
+    "MaritalStatus":              "Marital Status",
+    "NumberOfAddress":            "Number of Saved Addresses",
+    "Complain":                   "Raised a Complaint? (0 = No, 1 = Yes)",
+    "OrderAmountHikeFromlastYear":"Order Amount Increase from Last Year (%)",
+    "CouponUsed":                 "Coupons Used (last month)",
+    "OrderCount":                 "Number of Orders (last month)",
+    "DaySinceLastOrder":          "Days Since Last Order",
+    "CashbackAmount":             "Cashback Received (last month, $)",
+    "Churn":                      "Churn Status",
+}
+
+# Tooltip help text for each column
+FIELD_HELP: dict[str, str] = {
+    "Tenure":                     "How many months the customer has been on the platform.",
+    "PreferredLoginDevice":       "The device the customer most often uses to log in.",
+    "CityTier":                   "Tier 1 = major metro, Tier 2 = mid-sized city, Tier 3 = small city or town.",
+    "WarehouseToHome":            "Distance in km from the nearest fulfilment warehouse to the customer's address.",
+    "PreferredPaymentMode":       "The payment method the customer uses most frequently.",
+    "Gender":                     "Customer's gender.",
+    "HourSpendOnApp":             "Average number of hours the customer spends on the mobile app or website per day.",
+    "NumberOfDeviceRegistered":   "Total number of devices (phone, tablet, laptop) the customer has registered.",
+    "PreferedOrderCat":           "The product category the customer orders most often.",
+    "SatisfactionScore":          "Customer satisfaction rating from 1 (very dissatisfied) to 5 (very satisfied).",
+    "MaritalStatus":              "Customer's marital status.",
+    "NumberOfAddress":            "Number of delivery addresses saved in the customer's account.",
+    "Complain":                   "Whether the customer raised a complaint in the last month (0 = No, 1 = Yes).",
+    "OrderAmountHikeFromlastYear":"Percentage increase in the customer's order value compared to the same period last year.",
+    "CouponUsed":                 "Number of discount coupons the customer used in the last month.",
+    "OrderCount":                 "Total number of orders placed by the customer in the last month.",
+    "DaySinceLastOrder":          "Number of days since the customer last placed an order.",
+    "CashbackAmount":             "Total cashback amount (in $) the customer received in the last month.",
+    "Churn":                      "Whether this customer has already churned. Leave as Unknown for new customers.",
+}
+
+# Group columns into sections for a cleaner layout
+SECTION_GROUPS: list[tuple[str, list[str]]] = [
+    ("Account Information", [
+        "PreferredLoginDevice",
+        "Tenure",
+        "CityTier",
+        "MaritalStatus",
+        "Gender",
+    ]),
+    ("Shopping Behaviour", [
+        "PreferedOrderCat",
+        "PreferredPaymentMode",
+        "HourSpendOnApp",
+        "NumberOfDeviceRegistered",
+        "NumberOfAddress",
+    ]),
+    ("Order Activity", [
+        "OrderCount",
+        "OrderAmountHikeFromlastYear",
+        "CouponUsed",
+        "DaySinceLastOrder",
+        "CashbackAmount",
+        "WarehouseToHome",
+    ]),
+    ("Satisfaction & Complaints", [
+        "SatisfactionScore",
+        "Complain",
+    ]),
+    ("Churn Label", [
+        "Churn",
+    ]),
+]
+
 
 @st.cache_data
 def load_dataset_schema(csv_path: Path) -> dict[str, Any]:
@@ -156,16 +235,17 @@ def validate_submission(payload: dict[str, Any], schema: dict[str, Any]) -> list
             continue
 
         if value is None or (isinstance(value, str) and not value.strip()):
-            errors.append(f"{col}: value is required")
+            label = FIELD_LABELS.get(col, col)
+            errors.append(f"{label}: value is required")
             continue
 
         if col == "CustomerID":
             try:
                 customer_id = int(value)
                 if customer_id <= 0:
-                    errors.append("CustomerID: must be a positive integer")
+                    errors.append("Customer ID: must be a positive integer")
             except (TypeError, ValueError):
-                errors.append("CustomerID: must be an integer")
+                errors.append("Customer ID: must be an integer")
             continue
 
         if col in schema["numeric_cols"]:
@@ -176,21 +256,25 @@ def validate_submission(payload: dict[str, Any], schema: dict[str, Any]) -> list
             try:
                 numeric_value = float(value)
             except (TypeError, ValueError):
-                errors.append(f"{col}: must be numeric")
+                label = FIELD_LABELS.get(col, col)
+                errors.append(f"{label}: must be numeric")
                 continue
 
             if numeric_value < stats["min"] or numeric_value > stats["max"]:
+                label = FIELD_LABELS.get(col, col)
                 errors.append(
-                    f"{col}: out of accepted range [{stats['min']:.2f}, {stats['max']:.2f}]"
+                    f"{label}: out of accepted range [{stats['min']:.2f}, {stats['max']:.2f}]"
                 )
 
             if stats["is_int"] and float(numeric_value).is_integer() is False:
-                errors.append(f"{col}: must be an integer")
+                label = FIELD_LABELS.get(col, col)
+                errors.append(f"{label}: must be a whole number")
 
         elif col in schema["categorical_cols"]:
             allowed = schema["categorical_values"].get(col, [])
             if str(value) not in allowed:
-                errors.append(f"{col}: invalid category '{value}'")
+                label = FIELD_LABELS.get(col, col)
+                errors.append(f"{label}: invalid selection '{value}'")
 
     return errors
 
@@ -225,58 +309,70 @@ def write_to_firestore(db, payload: dict[str, Any], errors: list[str]) -> tuple[
     return submission_id, promoted_id
 
 
+def render_field(col: str, schema: dict[str, Any], payload: dict[str, Any]) -> None:
+    label = FIELD_LABELS.get(col, col)
+    help_text = FIELD_HELP.get(col, None)
+
+    if col == TARGET_COL:
+        selected = st.selectbox(
+            label,
+            options=["Unknown", "0 - Did not churn", "1 - Churned"],
+            index=0,
+            help="Leave as Unknown for new customers. Set only if the churn outcome is already known.",
+        )
+        if selected == "Unknown":
+            payload[col] = None
+        elif selected.startswith("0"):
+            payload[col] = 0
+        else:
+            payload[col] = 1
+        return
+
+    if col in schema["numeric_cols"]:
+        stats = schema["numeric_stats"][col]
+        if stats["is_int"]:
+            value = st.number_input(
+                label,
+                min_value=int(stats["min"]),
+                max_value=int(stats["max"]),
+                value=int(stats["median"]),
+                step=1,
+                help=help_text,
+            )
+            payload[col] = int(value)
+        else:
+            value = st.number_input(
+                label,
+                min_value=float(stats["min"]),
+                max_value=float(stats["max"]),
+                value=float(stats["median"]),
+                step=0.01,
+                help=help_text,
+            )
+            payload[col] = float(value)
+    else:
+        options = schema["categorical_values"].get(col, [])
+        if options:
+            payload[col] = st.selectbox(label, options=options, help=help_text)
+        else:
+            payload[col] = st.text_input(label, value="", help=help_text)
+
+
 def build_form(schema: dict[str, Any], next_customer_id: int) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    columns = schema["columns"]
+    payload: dict[str, Any] = {"CustomerID": next_customer_id}
 
-    left, right = st.columns(2)
-    visible_idx = 0
+    st.info(f"Customer ID will be automatically assigned: **{next_customer_id}**")
 
-    for col in columns:
-        if col == "CustomerID":
-            payload[col] = next_customer_id
-            continue
-
-        container = left if visible_idx % 2 == 0 else right
-        visible_idx += 1
-
-        with container:
-            if col == TARGET_COL:
-                selected = st.selectbox(
-                    f"{col} (optional for new customers)",
-                    options=["Unknown", 0, 1],
-                    index=0,
-                    help="For fresh submissions, choose Unknown. Set 0/1 only if a known label exists.",
-                )
-                payload[col] = None if selected == "Unknown" else int(selected)
+    for section_title, cols in SECTION_GROUPS:
+        st.markdown(f"#### {section_title}")
+        left, right = st.columns(2)
+        for i, col in enumerate(cols):
+            if col not in schema["columns"]:
                 continue
+            with (left if i % 2 == 0 else right):
+                render_field(col, schema, payload)
 
-            if col in schema["numeric_cols"]:
-                stats = schema["numeric_stats"][col]
-                if stats["is_int"]:
-                    value = st.number_input(
-                        col,
-                        min_value=int(stats["min"]),
-                        max_value=int(stats["max"]),
-                        value=int(stats["median"]),
-                        step=1,
-                    )
-                    payload[col] = int(value)
-                else:
-                    value = st.number_input(
-                        col,
-                        min_value=float(stats["min"]),
-                        max_value=float(stats["max"]),
-                        value=float(stats["median"]),
-                        step=0.01,
-                    )
-                    payload[col] = float(value)
-            else:
-                options = schema["categorical_values"].get(col, [])
-                if options:
-                    payload[col] = st.selectbox(col, options=options)
-                else:
-                    payload[col] = st.text_input(col, value="")
+        st.divider()
 
     return payload
 
@@ -285,29 +381,27 @@ def main():
     st.markdown(
         """
         <div class="hero">
-          <h2 style="margin:0;">Live Customer Intake Form</h2>
+          <h2 style="margin:0;">New Customer Intake</h2>
           <p class="subtle" style="margin:0.35rem 0 0 0;">
-            Captures the original Kaggle schema, validates inputs, then writes to Firestore.
+            Fill in the customer details below. All fields are required unless marked optional.
           </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.sidebar.header("Pipeline Mapping")
-    st.sidebar.caption("Phase 2: client form -> customer_submissions -> current_customers")
+    st.sidebar.header("How it works")
     st.sidebar.markdown(
         """
-- Source tag: `client_submission`
-- Invalid records stay in `customer_submissions`
-- Valid records are promoted to `current_customers`
-- CustomerID is auto-generated from Firestore
-- Credentials should come from Streamlit secrets
+- Fill in the form and click **Submit**
+- Valid records are saved and available for churn scoring on the dashboard
+- Invalid records are logged but not promoted
+- Customer ID is assigned automatically
         """
     )
 
     if not CSV_PATH.exists():
-        st.error(f"CSV file not found: {CSV_PATH}")
+        st.error(f"Reference dataset not found: {CSV_PATH}")
         st.stop()
 
     schema = load_dataset_schema(CSV_PATH)
@@ -316,13 +410,13 @@ def main():
         db = get_firestore_client()
         next_customer_id = get_next_customer_id(db)
     except Exception as ex:
-        st.error("Could not connect to Firestore to generate the next CustomerID.")
+        st.error("Could not connect to Firestore to generate the next Customer ID.")
         st.code(str(ex))
         st.stop()
 
     with st.form("new_customer_form"):
         payload = build_form(schema, next_customer_id)
-        submitted = st.form_submit_button("Submit New Customer")
+        submitted = st.form_submit_button("Submit New Customer", use_container_width=True)
 
     if not submitted:
         return
@@ -330,22 +424,19 @@ def main():
     validation_errors = validate_submission(payload, schema)
 
     if validation_errors:
-        st.error("Validation failed. Record is captured in submissions but will not be promoted.")
+        st.error("Some fields have errors. The record has been logged but will not be scored on the dashboard.")
         for e in validation_errors:
             st.write(f"- {e}")
     else:
-        st.success("Validation passed.")
+        st.success("Customer submitted successfully. They will appear on the dashboard after the next data refresh.")
 
     try:
         submission_id, promoted_id = write_to_firestore(db, payload, validation_errors)
 
-        st.info(f"Assigned CustomerID: {payload['CustomerID']}")
-        st.info(f"Written to '{SUBMISSIONS_COLLECTION}' with document ID: {submission_id}")
-        if promoted_id:
-            st.success(f"Promoted to '{CURRENT_COLLECTION}' with document ID: {promoted_id}")
+        st.caption(f"Assigned Customer ID: {payload['CustomerID']}  |  Record ID: {submission_id}")
 
     except Exception as ex:
-        st.warning("Could not write to Firestore yet. Check dependencies and secrets configuration.")
+        st.warning("Could not write to Firestore. Check your secrets configuration.")
         st.code(str(ex))
 
 
