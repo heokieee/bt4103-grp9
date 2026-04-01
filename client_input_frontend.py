@@ -93,7 +93,6 @@ FIELD_LABELS: dict[str, str] = {
     "Churn":                      "Churn Status",
 }
 
-# Tooltip help text for each column
 FIELD_HELP: dict[str, str] = {
     "Tenure":                     "How many months the customer has been on the platform.",
     "PreferredLoginDevice":       "The device the customer most often uses to log in.",
