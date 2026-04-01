@@ -133,7 +133,7 @@ FEATURE_IMPORTANCE_PATH = BASE / "ensemble_shap_feature_importance.csv"
 REFERENCE_DATASET_PATH = BASE / "E Commerce Dataset.csv"
 
 CURRENT_COLLECTION = "current_customers"
-FIRESTORE_FETCH_LIMIT = 50  # max records fetched for scoring; increase if needed
+FIRESTORE_FETCH_LIMIT = 10000  # fetch up to 10,000 records for scoring
 
 DEFAULT_ID_CANDIDATES = [
     "CustomerID",
