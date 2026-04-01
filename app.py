@@ -531,76 +531,156 @@ def run_retraining_job() -> tuple[bool, str]:
     return True, output.strip() or "Retraining completed."
 
 
+INTAKE_FIELD_LABELS: dict[str, str] = {
+    "Tenure":                     "Tenure (months with platform)",
+    "PreferredLoginDevice":       "Preferred Login Device",
+    "CityTier":                   "City Tier (1 = Metro, 3 = Small city)",
+    "WarehouseToHome":            "Warehouse to Home Distance (km)",
+    "PreferredPaymentMode":       "Preferred Payment Method",
+    "Gender":                     "Gender",
+    "HourSpendOnApp":             "Hours Spent on App (per day)",
+    "NumberOfDeviceRegistered":   "Number of Devices Registered",
+    "PreferedOrderCat":           "Preferred Order Category",
+    "SatisfactionScore":          "Satisfaction Score (1-5)",
+    "MaritalStatus":              "Marital Status",
+    "NumberOfAddress":            "Number of Saved Addresses",
+    "Complain":                   "Raised a Complaint? (0 = No, 1 = Yes)",
+    "OrderAmountHikeFromlastYear":"Order Amount Increase from Last Year (%)",
+    "CouponUsed":                 "Coupons Used (last month)",
+    "OrderCount":                 "Number of Orders (last month)",
+    "DaySinceLastOrder":          "Days Since Last Order",
+    "CashbackAmount":             "Cashback Received (last month, $)",
+    "Churn":                      "Churn Status",
+}
+
+INTAKE_FIELD_HELP: dict[str, str] = {
+    "Tenure":                     "How many months the customer has been on the platform.",
+    "PreferredLoginDevice":       "The device the customer most often uses to log in.",
+    "CityTier":                   "Tier 1 = major metro, Tier 2 = mid-sized city, Tier 3 = small city or town.",
+    "WarehouseToHome":            "Distance in km from the nearest fulfilment warehouse to the customer's address.",
+    "PreferredPaymentMode":       "The payment method the customer uses most frequently.",
+    "Gender":                     "Customer's gender.",
+    "HourSpendOnApp":             "Average number of hours the customer spends on the mobile app or website per day.",
+    "NumberOfDeviceRegistered":   "Total number of devices the customer has registered.",
+    "PreferedOrderCat":           "The product category the customer orders most often.",
+    "SatisfactionScore":          "Customer satisfaction rating from 1 (very dissatisfied) to 5 (very satisfied).",
+    "MaritalStatus":              "Customer's marital status.",
+    "NumberOfAddress":            "Number of delivery addresses saved in the customer's account.",
+    "Complain":                   "Whether the customer raised a complaint in the last month (0 = No, 1 = Yes).",
+    "OrderAmountHikeFromlastYear":"Percentage increase in order value compared to the same period last year.",
+    "CouponUsed":                 "Number of discount coupons the customer used in the last month.",
+    "OrderCount":                 "Total number of orders placed in the last month.",
+    "DaySinceLastOrder":          "Number of days since the customer last placed an order.",
+    "CashbackAmount":             "Total cashback amount (in $) received in the last month.",
+    "Churn":                      "Whether this customer has already churned. Leave as Unknown for new customers.",
+}
+
+INTAKE_SECTION_GROUPS: list[tuple[str, list[str]]] = [
+    ("Account Information", [
+        "PreferredLoginDevice",
+        "Tenure",
+        "CityTier",
+        "MaritalStatus",
+        "Gender",
+    ]),
+    ("Shopping Behaviour", [
+        "PreferedOrderCat",
+        "PreferredPaymentMode",
+        "HourSpendOnApp",
+        "NumberOfDeviceRegistered",
+        "NumberOfAddress",
+    ]),
+    ("Order Activity", [
+        "OrderCount",
+        "OrderAmountHikeFromlastYear",
+        "CouponUsed",
+        "DaySinceLastOrder",
+        "CashbackAmount",
+        "WarehouseToHome",
+    ]),
+    ("Satisfaction & Complaints", [
+        "SatisfactionScore",
+        "Complain",
+    ]),
+    ("Churn Label", [
+        "Churn",
+    ]),
+]
+
+
+def render_intake_field(col: str, schema: dict[str, object], payload: dict[str, object]) -> None:
+    label = INTAKE_FIELD_LABELS.get(col, col)
+    help_text = INTAKE_FIELD_HELP.get(col, None)
+
+    if col == INTAKE_TARGET_COL:
+        selected = st.selectbox(
+            label,
+            options=["Unknown", "0 - Did not churn", "1 - Churned"],
+            index=0,
+            help="Leave as Unknown for new customers. Set only if the churn outcome is already known.",
+        )
+        if selected == "Unknown":
+            payload[col] = None
+        elif selected.startswith("0"):
+            payload[col] = 0
+        else:
+            payload[col] = 1
+        return
+
+    if col in schema["numeric_cols"]:
+        stats = schema["numeric_stats"][col]
+        if stats["is_int"]:
+            value = st.number_input(
+                label,
+                min_value=int(stats["min"]),
+                max_value=int(stats["max"]),
+                value=int(stats["median"]),
+                step=1,
+                help=help_text,
+            )
+            payload[col] = int(value)
+        else:
+            value = st.number_input(
+                label,
+                min_value=float(stats["min"]),
+                max_value=float(stats["max"]),
+                value=float(stats["median"]),
+                step=0.01,
+                help=help_text,
+            )
+            payload[col] = float(value)
+    else:
+        options = schema["categorical_values"].get(col, [])
+        if options:
+            payload[col] = st.selectbox(label, options=options, help=help_text)
+        else:
+            payload[col] = st.text_input(label, value="", help=help_text)
+
+
 def build_intake_form(schema: dict[str, object], next_customer_id: int) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    columns = schema["columns"]
+    payload: dict[str, object] = {"CustomerID": next_customer_id}
 
-    left, right = st.columns(2)
-    visible_idx = 0
+    st.info(f"Customer ID will be automatically assigned: **{next_customer_id}**")
 
-    for col in columns:
-        if col == "CustomerID":
-            payload[col] = next_customer_id
-            continue
-
-        container = left if visible_idx % 2 == 0 else right
-        visible_idx += 1
-
-        with container:
-            if col == INTAKE_TARGET_COL:
-                selected = st.selectbox(
-                    f"{col} (optional for new customers)",
-                    options=["Unknown", 0, 1],
-                    index=0,
-                    help="For fresh submissions, choose Unknown. Set 0/1 only if a known label exists.",
-                )
-                payload[col] = None if selected == "Unknown" else int(selected)
+    for section_title, cols in INTAKE_SECTION_GROUPS:
+        st.markdown(f"#### {section_title}")
+        left, right = st.columns(2)
+        for i, col in enumerate(cols):
+            if col not in schema["columns"]:
                 continue
-
-            if col in schema["numeric_cols"]:
-                stats = schema["numeric_stats"][col]
-                if stats["is_int"]:
-                    value = st.number_input(
-                        col,
-                        min_value=int(stats["min"]),
-                        max_value=int(stats["max"]),
-                        value=int(stats["median"]),
-                        step=1,
-                    )
-                    payload[col] = int(value)
-                else:
-                    value = st.number_input(
-                        col,
-                        min_value=float(stats["min"]),
-                        max_value=float(stats["max"]),
-                        value=float(stats["median"]),
-                        step=0.01,
-                    )
-                    payload[col] = float(value)
-            else:
-                options = schema["categorical_values"].get(col, [])
-                if options:
-                    payload[col] = st.selectbox(col, options=options)
-                else:
-                    payload[col] = st.text_input(col, value="")
+            with (left if i % 2 == 0 else right):
+                render_intake_field(col, schema, payload)
+        st.divider()
 
     return payload
 
 
 def render_intake_mode() -> None:
-    st.markdown(
-        """
-        # New Customer Intake
-        Submit a customer profile and write it to Firestore.
-        """
-    )
-
-    st.caption(
-        "Writes to customer_submissions, then promotes valid records to current_customers."
-    )
+    st.markdown("# New Customer Intake")
+    st.caption("Fill in the customer details below. All fields are required unless marked optional.")
 
     if not REFERENCE_DATASET_PATH.exists():
-        st.error(f"CSV file not found: {REFERENCE_DATASET_PATH}")
+        st.error(f"Reference dataset not found: {REFERENCE_DATASET_PATH}")
         return
 
     schema = intake_load_dataset_schema(REFERENCE_DATASET_PATH)
@@ -613,13 +693,13 @@ def render_intake_mode() -> None:
             current_collection=INTAKE_CURRENT_COLLECTION,
         )
     except Exception as ex:
-        st.error("Could not connect to Firestore to generate the next CustomerID.")
+        st.error("Could not connect to Firestore to generate the next Customer ID.")
         st.code(str(ex))
         return
 
     with st.form("new_customer_form"):
         payload = build_intake_form(schema, next_customer_id)
-        submitted = st.form_submit_button("Submit New Customer")
+        submitted = st.form_submit_button("Submit New Customer", use_container_width=True)
 
     if not submitted:
         return
@@ -631,11 +711,11 @@ def render_intake_mode() -> None:
     )
 
     if validation_errors:
-        st.error("Validation failed. Record is captured in submissions but will not be promoted.")
+        st.error("Some fields have errors. The record has been logged but will not be scored on the dashboard.")
         for err in validation_errors:
             st.write(f"- {err}")
     else:
-        st.success("Validation passed.")
+        st.success("Customer submitted successfully. They will appear on the dashboard after the next data refresh.")
 
     try:
         submission_id, promoted_id = intake_write_to_firestore(
@@ -648,27 +728,14 @@ def render_intake_mode() -> None:
             current_collection=INTAKE_CURRENT_COLLECTION,
         )
 
-        st.info(f"Assigned CustomerID: {payload['CustomerID']}")
-        st.info(
-            "Written to '{}' with document ID: {}".format(
-                INTAKE_SUBMISSIONS_COLLECTION,
-                submission_id,
-            )
-        )
-        if promoted_id:
-            st.success(
-                "Promoted to '{}' with document ID: {}".format(
-                    INTAKE_CURRENT_COLLECTION,
-                    promoted_id,
-                )
-            )
+        st.caption(f"Assigned Customer ID: {payload['CustomerID']}  |  Record ID: {submission_id}")
 
-        if st.button("Go to Dashboard", use_container_width=True):
+        if promoted_id and st.button("Go to Dashboard", use_container_width=True):
             st.session_state["app_mode"] = "Dashboard"
             st.rerun()
 
     except Exception as ex:
-        st.warning("Could not write to Firestore yet. Check dependencies and secrets configuration.")
+        st.warning("Could not write to Firestore. Check your secrets configuration.")
         st.code(str(ex))
 
 
