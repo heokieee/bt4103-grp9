@@ -1661,31 +1661,51 @@ with tab_lookup:
             # Gauge meter — main visual centrepiece
             gauge_col, summary_col = st.columns([2, 1])
             with gauge_col:
-                fig_gauge = go.Figure(
-                    go.Indicator(
-                        mode="gauge+number",
-                        value=prob * 100,
-                        title={"text": "Churn Risk Score", "font": {"size": 18}},
-                        number={"suffix": "%", "font": {"size": 48}},
-                        gauge=dict(
-                            axis=dict(range=[0, 100]),
-                            bar=dict(color=prob_colour),
-                            steps=[
-                                dict(range=[0, 25], color="rgba(46, 204, 113, 0.2)"),
-                                dict(range=[25, 50], color="rgba(243, 156, 18, 0.2)"),
-                                dict(range=[50, 75], color="rgba(231, 76, 60, 0.2)"),
-                                dict(range=[75, 100], color="rgba(142, 68, 173, 0.2)"),
-                            ],
-                            threshold=dict(
-                                line=dict(color="black", width=3),
-                                thickness=0.8,
-                                value=threshold,
+                inner_left, inner_mid, inner_right = st.columns([1, 3, 1])
+
+                with inner_mid:
+                    fig_gauge = go.Figure(
+                        go.Indicator(
+                            mode="gauge+number",
+                            value=prob * 100,
+                            title={"text": "Churn Risk Score", "font": {"size": 18}},
+                            number={
+                                "suffix": "%",
+                                "font": {"size": 34},
+                                "valueformat": ".1f",
+                            },
+                            domain={"x": [0, 1], "y": [0, 1]},
+                            gauge=dict(
+                                axis=dict(
+                                    range=[0, 100],
+                                    tickmode="array",
+                                    tickvals=[0, 25, 50, 75, 100],
+                                ),
+                                bar=dict(color=prob_colour),
+                                steps=[
+                                    dict(range=[0, 25], color="rgba(46, 204, 113, 0.2)"),
+                                    dict(range=[25, 50], color="rgba(243, 156, 18, 0.2)"),
+                                    dict(range=[50, 75], color="rgba(231, 76, 60, 0.2)"),
+                                    dict(range=[75, 100], color="rgba(142, 68, 173, 0.2)"),
+                                ],
+                                threshold=dict(
+                                    line=dict(color="black", width=3),
+                                    thickness=0.8,
+                                    value=threshold,
+                                ),
                             ),
-                        ),
+                        )
                     )
-                )
-                fig_gauge.update_layout(height=320, template=PLOTLY_TEMPLATE)
-                st.plotly_chart(fig_gauge, use_container_width=True)
+
+                    fig_gauge.update_layout(
+                        width=420,
+                        height=300,
+                        margin=dict(l=40, r=40, t=70, b=20),
+                        autosize=False,
+                        template=PLOTLY_TEMPLATE,
+                    )
+
+                    st.plotly_chart(fig_gauge, use_container_width=False)
 
             with summary_col:
                 st.markdown("<br><br>", unsafe_allow_html=True)
