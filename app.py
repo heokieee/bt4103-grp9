@@ -85,8 +85,8 @@ st.markdown(
 
     /* ── Metric cards ── */
     div[data-testid="stMetric"] {
-        background: #ffffff;
-        border: 1px solid #e5e7eb;
+        background: var(--secondary-background-color);
+        border: 1px solid rgba(128,128,128,0.25);
         border-radius: 14px;
         padding: 18px 22px;
         box-shadow: 0 1px 4px rgba(0,0,0,0.06);
@@ -97,15 +97,16 @@ st.markdown(
     }
     div[data-testid="stMetric"] label {
         font-size: 0.78rem !important;
-        color: #6b7280 !important;
         font-weight: 600 !important;
         text-transform: uppercase;
         letter-spacing: 0.06em;
+        color: var(--text-color) !important;
+        opacity: 0.75;
     }
     div[data-testid="stMetric"] [data-testid="stMetricValue"] {
         font-size: 1.75rem !important;
         font-weight: 700 !important;
-        color: #111827 !important;
+        color: var(--text-color) !important;
     }
 
     /* ── Tabs ── */
@@ -122,9 +123,8 @@ st.markdown(
 
     /* ── Sidebar ── */
     section[data-testid="stSidebar"] {
-        background: #f9fafb;
-        border-right: 1px solid #e5e7eb;
-    }
+        border-right: 1px solid rgba(128,128,128,0.25);
+    }   
     section[data-testid="stSidebar"] > div {
         padding-top: 1.2rem;
     }
@@ -133,7 +133,8 @@ st.markdown(
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.1em;
-        color: #9ca3af;
+        color: var(--text-color);
+        opacity: 0.65;
         padding: 4px 0 6px 0;
         margin-top: 8px;
     }
@@ -158,9 +159,9 @@ st.markdown(
 
     /* ── Expanders ── */
     details {
-        border: 1px solid #e5e7eb !important;
+        border: 1px solid rgba(128,128,128,0.25) !important;
         border-radius: 10px !important;
-        background: #ffffff;
+        background: transparent !important;
     }
 
     /* ── Dividers ── */
@@ -193,10 +194,10 @@ st.markdown(
     .section-heading {
         font-size: 1.05rem;
         font-weight: 700;
-        color: #111827;
+        color: var(--text-color);
         margin: 1.2rem 0 0.6rem 0;
         padding-bottom: 6px;
-        border-bottom: 2px solid #e5e7eb;
+        border-bottom: 2px solid rgba(128,128,128,0.25);
     }
     </style>
     """,
@@ -663,6 +664,33 @@ INTAKE_FIELD_HELP: dict[str, str] = {
     "Churn":                      "Whether this customer has already churned. Leave as Unknown for new customers.",
 }
 
+DASHBOARD_FILTER_LABELS = {
+    "Gender": "Gender",
+    "MaritalStatus": "Marital Status",
+    "PreferredLoginDevice": "Login Device",
+    "PreferedOrderCat": "Preferred Order Category",
+    "PreferredPaymentMode": "Preferred Payment Method",
+    "CityTier": "City Tier",
+}
+
+DASHBOARD_FILTER_HELP = {
+    "Gender": "Customer's gender.",
+    "MaritalStatus": "Customer's marital status.",
+    "PreferredLoginDevice": "Device the customer most often uses to log in.",
+    "PreferedOrderCat": "Product category the customer orders most often.",
+    "PreferredPaymentMode": "Payment method the customer uses most frequently.",
+    "CityTier": "Tier 1 = major metro, Tier 2 = mid-sized city, Tier 3 = small city or town.",
+}
+
+MODEL_METRIC_HELP = {
+    "Accuracy": "Overall share of predictions that were correct.",
+    "Precision": "Among customers predicted to churn, the share who actually churned.",
+    "Recall": "Among customers who actually churned, the share the model correctly identified.",
+    "F1 Score": "Balances precision and recall into one score.",
+    "ROC-AUC": "Measures how well the model separates churners from non-churners.",
+    "Risk Tier": "Low: 0–25%, Medium: 25–50%, High: 50–75%, Critical: 75–100% predicted churn probability.",
+}
+
 INTAKE_SECTION_GROUPS: list[tuple[str, list[str]]] = [
     ("Account Information", [
         "PreferredLoginDevice",
@@ -691,7 +719,6 @@ INTAKE_SECTION_GROUPS: list[tuple[str, list[str]]] = [
         "Complain",
     ]),
 ]
-
 
 def render_intake_field(col: str, schema: dict[str, object], payload: dict[str, object]) -> None:
     label = INTAKE_FIELD_LABELS.get(col, col)
@@ -846,6 +873,18 @@ st.markdown(
 )
 
 # =========================
+# SESSION STATE DEFAULTS
+# =========================
+if "dashboard_data_source" not in st.session_state:
+    st.session_state["dashboard_data_source"] = "Firestore Live Data"
+
+if "dashboard_uploaded_file" not in st.session_state:
+    st.session_state["dashboard_uploaded_file"] = None
+
+if "_prev_app_mode" not in st.session_state:
+    st.session_state["_prev_app_mode"] = "Dashboard"
+
+# =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
@@ -858,6 +897,10 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
+    if app_mode == "Dashboard" and st.session_state["_prev_app_mode"] != "Dashboard":
+        st.session_state["dashboard_data_source"] = "Firestore Live Data"
+        st.session_state["dashboard_uploaded_file"] = None
+
     st.markdown("---")
 
     data_source = "Firestore Live Data"
@@ -869,7 +912,7 @@ with st.sidebar:
         data_source = st.radio(
             "Data Source",
             options=["Firestore Live Data", "Upload CSV"],
-            index=0,
+            key="dashboard_data_source",
             label_visibility="collapsed",
         )
 
@@ -877,6 +920,7 @@ with st.sidebar:
             uploaded = st.file_uploader(
                 "Upload Customer CSV",
                 type=["csv"],
+                key="dashboard_uploaded_file",
                 help="Upload a CSV with the same columns as the training dataset.",
             )
 
@@ -892,6 +936,42 @@ with st.sidebar:
         )
         st.caption("Currently classifying customers above **{}%** as churners.".format(threshold))
 
+        st.markdown("---")
+        with st.expander("FAQs", expanded=False):
+
+            st.markdown("**1. What does this dashboard do?**")
+            st.write(
+                "This dashboard predicts customer churn probability, highlights at-risk customers, "
+                "and helps users identify which segments may need retention action."
+            )
+
+            st.markdown("**2. How should I read churn probability?**")
+            st.write(
+                "A higher churn probability means the model estimates a higher likelihood that the customer will leave."
+            )
+
+            st.markdown("**3. What does 'Customers at Risk' mean?**")
+            st.write(
+                "These are customers whose predicted churn probability is above the selected classification threshold."
+            )
+
+            st.markdown("**4. Why might an uploaded CSV not work?**")
+            st.write(
+                "The uploaded file must contain the same columns expected by the trained model. "
+                "If required fields are missing, the dashboard cannot score the data."
+            )
+
+            st.markdown("**5. Does this dashboard guarantee churn?**")
+            st.write(
+                "No. The output is a model-based probability estimate, not a guaranteed outcome."
+            )
+
+            st.markdown("**6. Who should use this dashboard?**")
+            st.write(
+                "This dashboard is designed for business users who want to monitor churn risk, "
+                "explore customer segments, and support retention decisions."
+            )
+        
         st.markdown("---")
         with st.expander("Artifact Status", expanded=False):
             artifact_checks = {
@@ -979,6 +1059,8 @@ with st.sidebar:
                     st.code(_logs)
     else:
         st.caption("Use this mode to capture and validate new customer records.")
+    
+    st.session_state["_prev_app_mode"] = app_mode
 
 if app_mode == "New Customer Intake":
     render_intake_mode()
@@ -1117,8 +1199,8 @@ FILTER_LABELS = {
     "Gender": "Gender",
     "MaritalStatus": "Marital Status",
     "PreferredLoginDevice": "Login Device",
-    "PreferedOrderCat": "Order Category",
-    "PreferredPaymentMode": "Payment Method",
+    "PreferedOrderCat": "Preferred Order Category",
+    "PreferredPaymentMode": "Preferred Payment Method",
     "CityTier": "City Tier",
 }
 
@@ -1136,7 +1218,12 @@ with st.expander("Filters — Narrow by customer segment", expanded=False):
         for i, c in enumerate(available_filters):
             with cols[i % len(cols)]:
                 opts = sorted([x for x in out[c].dropna().unique().tolist()])
-                sel = st.multiselect(FILTER_LABELS.get(c, c), options=opts, default=opts)
+                sel = st.multiselect(
+                    FILTER_LABELS.get(c, c),
+                    options=opts,
+                    default=opts,
+                    help=DASHBOARD_FILTER_HELP.get(c, ""),
+                )
                 selected[c] = set(sel)
 
         mask = np.ones(len(out), dtype=bool)
@@ -1220,11 +1307,36 @@ with tab_model:
         acc_v = accuracy_score(y_f, filtered["Churn_pred"])
 
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Accuracy", "{:.4f}".format(acc_v))
-        m2.metric("Precision", "{:.4f}".format(prec_v))
-        m3.metric("Recall", "{:.4f}".format(rec_v))
-        m4.metric("F1 Score", "{:.4f}".format(f1v))
-        m5.metric("ROC AUC", "{:.4f}".format(roc) if roc is not None else "N/A")
+
+        m1.metric(
+            "Accuracy",
+            "{:.4f}".format(acc_v),
+            help=MODEL_METRIC_HELP["Accuracy"]
+        )
+
+        m2.metric(
+            "Precision",
+            "{:.4f}".format(prec_v),
+            help=MODEL_METRIC_HELP["Precision"]
+        )
+
+        m3.metric(
+            "Recall",
+            "{:.4f}".format(rec_v),
+            help=MODEL_METRIC_HELP["Recall"]
+        )
+
+        m4.metric(
+            "F1 Score",
+            "{:.4f}".format(f1v),
+            help=MODEL_METRIC_HELP["F1 Score"]
+        )
+
+        m5.metric(
+            "ROC-AUC",
+            "{:.4f}".format(roc) if roc is not None else "N/A",
+            help=MODEL_METRIC_HELP["ROC-AUC"]
+        )
 
         col_cm, col_roc = st.columns(2)
 
@@ -1329,21 +1441,73 @@ with tab_drivers:
         # Clean feature names
         # -----------------------------------
         def clean_feature_name(f):
+            f = str(f)
+
             # Remove pipeline prefixes
             f = f.replace("num__", "").replace("cat__", "")
 
-            # Handle one-hot encoded features
-            if "_" in f:
-                parts = f.split("_")
-                # if it's categorical encoding (last part is category)
-                if len(parts) > 1 and parts[-1].isalpha():
-                    return f"{parts[0]} = {parts[-1]}"
-            
-            # Handle interaction features (space separated)
-            if " " in f:
-                return " × ".join(f.split(" "))
-            
-            return f
+            display_map = {
+                "PreferedOrderCat": "Preferred Order Category",
+                "PreferredLoginDevice": "Preferred Login Device",
+                "PreferredPaymentMode": "Preferred Payment Method",
+                "MaritalStatus": "Marital Status",
+                "CityTier": "City Tier",
+                "HourSpendOnApp": "Hours Spent on App",
+                "NumberOfDeviceRegistered": "Number of Devices Registered",
+                "SatisfactionScore": "Satisfaction Score",
+                "NumberOfAddress": "Number of Saved Addresses",
+                "Complain": "Raised a Complaint",
+                "OrderAmountHikeFromlastYear": "Order Amount Increase from Last Year",
+                "CouponUsed": "Coupons Used",
+                "OrderCount": "Number of Orders",
+                "DaySinceLastOrder": "Days Since Last Order",
+                "CashbackAmount": "Cashback Amount",
+                "WarehouseToHome": "Warehouse to Home Distance",
+                "Tenure": "Tenure",
+                "Gender": "Gender",
+            }
+
+            feature_keys = sorted(display_map.keys(), key=len, reverse=True)
+
+            def clean_single_feature(text):
+                text = text.strip()
+
+                # one-hot encoded categorical feature: Base_Value
+                for key in feature_keys:
+                    prefix = key + "_"
+                    if text.startswith(prefix):
+                        value = text[len(prefix):].strip()
+                        return f"{display_map[key]} = {value}"
+
+                # plain feature
+                return display_map.get(text, text)
+
+            # Split interaction terms only when a space is followed by another known feature name
+            split_parts = []
+            start = 0
+            i = 0
+            while i < len(f):
+                if f[i] == " ":
+                    remainder = f[i + 1:]
+                    matched = False
+                    for key in feature_keys:
+                        if remainder.startswith(key) or remainder.startswith(key + "_"):
+                            split_parts.append(f[start:i].strip())
+                            start = i + 1
+                            matched = True
+                            break
+                    if matched:
+                        i = start
+                        continue
+                i += 1
+            split_parts.append(f[start:].strip())
+
+            cleaned_parts = [clean_single_feature(part) for part in split_parts if part]
+
+            if len(cleaned_parts) > 1:
+                return " × ".join(cleaned_parts)
+
+            return cleaned_parts[0]
 
         feat_imp_external["clean_feature"] = feat_imp_external["feature"].apply(clean_feature_name)
 
@@ -1381,9 +1545,16 @@ with tab_drivers:
                 title=f"{chart_title} (Top {top_n})",
                 xaxis_title="Mean |SHAP value|",
                 yaxis_title="Feature",
-                height=max(400, top_n * 24),
+                height=max(500, top_n * 32),
                 template=PLOTLY_TEMPLATE,
-                margin=dict(l=200),
+                margin=dict(l=320),
+            )
+
+            fig_shap.update_yaxes(
+                tickmode="array",
+                tickvals=fi["clean_feature"].values[::-1],
+                ticktext=fi["clean_feature"].values[::-1],
+                automargin=True,
             )
 
             st.plotly_chart(fig_shap, use_container_width=True)
@@ -1405,6 +1576,7 @@ with tab_drivers:
 # =========================
 with tab_segments:
     st.markdown("### Customer Risk Segmentation")
+    st.caption(MODEL_METRIC_HELP["Risk Tier"])
 
     col_pie1, col_pie2 = st.columns(2)
 
@@ -1618,4 +1790,3 @@ with tab_data:
         template=PLOTLY_TEMPLATE,
     )
     st.plotly_chart(fig_hist, use_container_width=True)
-
